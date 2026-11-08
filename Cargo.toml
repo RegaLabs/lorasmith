@@ -19,6 +19,7 @@ anyhow = "1"
 burn = { version = "0.22.1", default-features = false, features = [
     "std",
     "autodiff",
+    "optim",
     "fusion",
     "autotune",
     "wgpu",
