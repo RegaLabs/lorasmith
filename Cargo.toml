@@ -1,0 +1,26 @@
+[package]
+name = "loraforge"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+description = "Fine-tune an open LLM on your own data with one command, on any GPU or none."
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["lora", "llm", "fine-tuning", "burn", "gpu"]
+categories = ["science", "command-line-utilities"]
+
+[features]
+default = []
+cuda = ["burn/cuda"]
+rocm = ["burn/rocm"]
+
+[dependencies]
+burn = { version = "0.22.1", default-features = false, features = [
+    "std",
+    "autodiff",
+    "fusion",
+    "autotune",
+    "wgpu",
+    "flex",
+] }
+clap = { version = "4", features = ["derive"] }
