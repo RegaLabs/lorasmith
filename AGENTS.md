@@ -17,7 +17,7 @@ North star: **under 10 minutes from install to chatting with your fine-tuned mod
 ## Scope
 
 In:
-- LoRA and QLoRA training of Llama-shaped models (Llama, Qwen2/3, Mistral, SmolLM, Phi-3).
+- LoRA and QLoRA training of Llama-shaped models: Llama, Mistral, Qwen2, Qwen3 (and their fine-tunes, such as SmolLM).
 - Downloading models and tokenizers from Hugging Face.
 - Exporting results that other tools load unchanged.
 
