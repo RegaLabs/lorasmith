@@ -47,7 +47,8 @@ fn gpu(device: Device) -> Option<Found> {
     })
 }
 
-fn cpu() -> Found {
+/// The CPU, which always works.
+pub fn cpu() -> Found {
     Found {
         name: "CPU".to_string(),
         device: Device::flex(),

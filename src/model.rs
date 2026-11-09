@@ -261,6 +261,7 @@ mod tests {
             let mut config = tiny(model_type);
             config.tie_word_embeddings = model_type == "qwen2";
             let model = Llama::new(&config, &device);
+            assert_eq!(model.num_params(), config.parameters(), "{model_type}");
             let out = logits(&model, [1, 2, 3, 4, 5, 6], &device);
             assert_eq!(out.len(), 6 * config.vocab_size, "{model_type}");
             assert!(out.iter().all(|v| v.is_finite()), "{model_type}");

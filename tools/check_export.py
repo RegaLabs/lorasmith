@@ -5,7 +5,7 @@
 """Checks that a loraforge run loads in Hugging Face PEFT and transformers unchanged.
 
 Run with `uv run tools/check_export.py <base model dir> <run dir>`. It compares the logits of
-base + PEFT adapter against the merged model, and prints the largest difference.
+base + PEFT adapter against the merged model, and prints the largest relative difference.
 """
 
 import sys
@@ -26,7 +26,8 @@ with torch.no_grad():
     merged_logits = merged(tokens).logits
 
 change = (adapter_logits - base_logits).abs().max().item()
-difference = (adapter_logits - merged_logits).abs().max().item()
+# Relative, because float32 rounding grows with depth and the size of the logits.
+difference = ((adapter_logits - merged_logits).abs().max() / merged_logits.abs().max()).item()
 print(f"adapter changes the logits by up to {change:.4f}")
-print(f"adapter vs merged model: max difference {difference:.2e}")
+print(f"adapter vs merged model: max relative difference {difference:.2e}")
 sys.exit(0 if change > 1e-3 and difference < 1e-4 else 1)

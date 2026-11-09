@@ -107,6 +107,26 @@ impl Config {
     pub fn qk_norm(&self) -> bool {
         self.model_type == "qwen3"
     }
+
+    /// Number of weights in the model, known before downloading any of them.
+    pub fn parameters(&self) -> usize {
+        let (hidden, head_dim) = (self.hidden_size, self.head_dim());
+        let (q, kv) = (
+            self.num_attention_heads * head_dim,
+            self.kv_heads() * head_dim,
+        );
+        let bias = if self.attention_bias() { q + 2 * kv } else { 0 };
+        let norms = if self.qk_norm() { 2 * head_dim } else { 0 };
+        let attention = 2 * hidden * q + 2 * hidden * kv + bias + norms;
+        let block = attention + 3 * hidden * self.intermediate_size + 2 * hidden;
+        let embeddings = self.vocab_size * hidden;
+        let head = if self.tie_word_embeddings {
+            0
+        } else {
+            embeddings
+        };
+        embeddings + self.num_hidden_layers * block + hidden + head
+    }
 }
 
 #[cfg(test)]
