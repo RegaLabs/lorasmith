@@ -1,10 +1,13 @@
 //! The LoRA training loop.
 
+use std::collections::HashMap;
 use std::f64::consts::PI;
 
+use burn::module::Module;
 use burn::optim::{AdamWConfig, GradientsParams, ModuleOptimizer};
-use burn::tensor::{Device, Int, Tensor, TensorData, activation};
+use burn::tensor::{Device, TensorData};
 
+use crate::batch;
 use crate::data::Example;
 use crate::lora;
 use crate::model::Llama;
@@ -40,7 +43,46 @@ impl Default for Options {
 pub struct Progress {
     pub step: usize,
     pub total: usize,
+    pub epoch: usize,
     pub loss: f32,
+    /// On the last step of each epoch: the loss on held-out examples, if there are any.
+    pub validation: Option<f32>,
+}
+
+/// Holds out about a tenth of `examples`, picked by `seed`, to measure how training
+/// generalizes. Fewer than 20 examples are too few to spare any.
+pub fn split(examples: Vec<Example>, seed: u64) -> (Vec<Example>, Vec<Example>) {
+    let held = if examples.len() < 20 {
+        0
+    } else {
+        (examples.len() / 10).min(200)
+    };
+    // A different order than the first epoch's, which uses `seed` itself.
+    let order = shuffled(examples.len(), !seed);
+    let mut slots: Vec<Option<Example>> = examples.into_iter().map(Some).collect();
+    let validation = order[..held]
+        .iter()
+        .map(|&i| slots[i].take().expect("shuffled yields each index once"))
+        .collect();
+    (slots.into_iter().flatten().collect(), validation)
+}
+
+/// Mean loss per trained token over `examples`, without training on them.
+pub fn evaluate(model: &Llama, examples: &[Example], batch_size: usize, device: &Device) -> f32 {
+    // Without autodiff, no gradient graph is kept for a loss nobody differentiates.
+    let model = model.valid();
+    let device = device.clone().without_autodiff();
+    let device = &device;
+    let (mut sum, mut count) = (0.0f64, 0usize);
+    for chunk in examples.chunks(batch_size) {
+        let refs: Vec<&Example> = chunk.iter().collect();
+        let batch = batch::tensors(&refs, device);
+        let tokens = batch.targets.dims()[0];
+        let loss: f32 = batch::loss(&model, batch).into_scalar();
+        sum += loss as f64 * tokens as f64;
+        count += tokens;
+    }
+    (sum / count.max(1) as f64) as f32
 }
 
 /// About how many optimizer steps a small dataset needs before the adapter has learned it.
@@ -69,21 +111,25 @@ pub fn optimizer() -> ModuleOptimizer {
         .init()
 }
 
-/// Trains the adapters on `examples`, reshuffled every epoch.
-/// `device` must be an autodiff device holding `model`.
+/// Trains the adapters on `examples`, reshuffled every epoch. With `validation` examples,
+/// it ends with the adapters from the epoch that did best on them, like the Hugging Face
+/// Trainer's `load_best_model_at_end`. `device` must be an autodiff device holding `model`.
 pub fn train(
     mut model: Llama,
     examples: &[Example],
+    validation: &[Example],
     options: &Options,
     device: &Device,
     mut report: impl FnMut(Progress),
 ) -> Llama {
     let mut optimizer = optimizer();
-    let total = examples.len().div_ceil(options.batch_size) * options.epochs;
+    let per_epoch = examples.len().div_ceil(options.batch_size);
+    let total = per_epoch * options.epochs;
     let mut step = 0;
+    let mut best: Option<(f32, HashMap<String, TensorData>)> = None;
     for epoch in 0..options.epochs {
         let order = shuffled(examples.len(), options.seed.wrapping_add(epoch as u64));
-        for indices in order.chunks(options.batch_size) {
+        for (i, indices) in order.chunks(options.batch_size).enumerate() {
             let batch: Vec<&Example> = indices.iter().map(|&i| &examples[i]).collect();
             let lr = learning_rate(options, step, total);
             let loss;
@@ -96,8 +142,24 @@ pub fn train(
                 device,
             );
             step += 1;
-            report(Progress { step, total, loss });
+            let checked = i + 1 == per_epoch && !validation.is_empty();
+            let score = checked.then(|| evaluate(&model, validation, options.batch_size, device));
+            if let Some(score) = score
+                && best.as_ref().is_none_or(|(lowest, _)| score < *lowest)
+            {
+                best = Some((score, lora::factors(&model)));
+            }
+            report(Progress {
+                step,
+                total,
+                epoch: epoch + 1,
+                loss,
+                validation: score,
+            });
         }
+    }
+    if let Some((_, factors)) = best {
+        model = lora::set_factors(model, |path, _| factors.get(path).cloned());
     }
     model
 }
@@ -111,7 +173,7 @@ pub fn step(
     max_grad_norm: f64,
     device: &Device,
 ) -> (Llama, f32) {
-    let loss = loss(&model, batch_tensors(batch, device));
+    let loss = batch::loss(&model, batch::tensors(batch, device));
     let value: f32 = loss.clone().into_scalar();
     let grads = GradientsParams::from_grads(loss.backward(), &model);
     let grads = lora::clip_grad_norm(&model, grads, max_grad_norm);
@@ -133,50 +195,6 @@ fn shuffled(len: usize, seed: u64) -> Vec<usize> {
     order
 }
 
-/// What one batch trains on: padded inputs, and for every position that counts toward
-/// the loss, its index in the flattened `[batch * seq]` grid and the token it should predict.
-struct Batch {
-    inputs: Tensor<2, Int>,
-    positions: Tensor<1, Int>,
-    targets: Tensor<1, Int>,
-}
-
-/// Shifts tokens by one so each position predicts the next, padding to the longest example.
-fn batch_tensors(batch: &[&Example], device: &Device) -> Batch {
-    let len = batch.iter().map(|e| e.tokens.len() - 1).max().unwrap_or(0);
-    let (mut inputs, mut positions, mut targets) = (Vec::new(), Vec::new(), Vec::new());
-    for (row, example) in batch.iter().enumerate() {
-        let n = example.tokens.len() - 1;
-        inputs.extend(example.tokens[..n].iter().map(|&t| t as i64));
-        inputs.extend(std::iter::repeat_n(0, len - n));
-        for i in 0..n {
-            if example.train[i + 1] {
-                positions.push((row * len + i) as i64);
-                targets.push(example.tokens[i + 1] as i64);
-            }
-        }
-    }
-    let count = positions.len();
-    Batch {
-        inputs: Tensor::from_data(TensorData::new(inputs, [batch.len(), len]), device),
-        positions: Tensor::from_data(TensorData::new(positions, [count]), device),
-        targets: Tensor::from_data(TensorData::new(targets, [count]), device),
-    }
-}
-
-/// Mean cross-entropy over the trained positions. Logits are computed for those positions
-/// only: with a 150k-token vocabulary, logits for every position of a long batch take gigabytes.
-fn loss(model: &Llama, batch: Batch) -> Tensor<1> {
-    let hidden = model.hidden(batch.inputs);
-    let [rows, len, width] = hidden.dims();
-    let picked = hidden
-        .reshape([rows * len, width])
-        .select(0, batch.positions);
-    let log_probs = activation::log_softmax(model.logits(picked), 1);
-    let chosen: Tensor<2> = log_probs.gather(1, batch.targets.unsqueeze_dim(1));
-    chosen.mean().neg()
-}
-
 /// Short linear warmup, then cosine decay to zero.
 fn learning_rate(options: &Options, step: usize, total: usize) -> f64 {
     let warmup = (total / 20).max(1);
@@ -191,6 +209,7 @@ fn learning_rate(options: &Options, step: usize, total: usize) -> f64 {
 mod tests {
     use super::*;
     use crate::config::tiny;
+    use burn::tensor::{Int, Tensor, TensorData};
 
     fn logits(model: &Llama, device: &Device) -> Vec<f32> {
         let tokens = Tensor::<2, Int>::from_data(TensorData::new(vec![1i64, 2, 3], [1, 3]), device);
@@ -226,9 +245,14 @@ mod tests {
             ..Options::default()
         };
         let mut losses = Vec::new();
-        let model = train(model, &[example.clone(), example], &options, &device, |p| {
-            losses.push(p.loss)
-        });
+        let model = train(
+            model,
+            &[example.clone(), example],
+            &[],
+            &options,
+            &device,
+            |p| losses.push(p.loss),
+        );
 
         assert_eq!(losses.len(), 40);
         assert!(
@@ -238,6 +262,26 @@ mod tests {
             losses[39]
         );
         assert_eq!(embeddings, model.embed_tokens.weight.val().into_data());
+    }
+
+    #[test]
+    fn a_tenth_is_held_out_from_twenty_examples_on() {
+        let examples = |n: u32| -> Vec<Example> {
+            (0..n)
+                .map(|i| Example {
+                    tokens: vec![i, i],
+                    train: vec![true, true],
+                })
+                .collect()
+        };
+        let (train, validation) = split(examples(30), 42);
+        assert_eq!((train.len(), validation.len()), (27, 3));
+        assert!(
+            validation
+                .iter()
+                .all(|v| train.iter().all(|t| t.tokens != v.tokens))
+        );
+        assert_eq!(split(examples(19), 42).1.len(), 0);
     }
 
     #[test]
@@ -256,25 +300,5 @@ mod tests {
         assert_eq!(order, shuffled(10, 42));
         assert_ne!(order, shuffled(10, 43));
         assert_ne!(order, sorted);
-    }
-
-    #[test]
-    fn padding_and_prompt_tokens_are_masked_out() {
-        let device = Device::flex();
-        let batch = [
-            Example {
-                tokens: vec![1, 2, 3, 4],
-                train: vec![false, false, true, true],
-            },
-            Example {
-                tokens: vec![7, 8],
-                train: vec![true, true],
-            },
-        ];
-        let batch = batch_tensors(&[&batch[0], &batch[1]], &device);
-        let ints = |t: Tensor<1, Int>| t.into_data().convert::<i64>().try_to_vec::<i64>().unwrap();
-        assert_eq!(batch.inputs.dims(), [2, 3]);
-        assert_eq!(ints(batch.positions), [1, 2, 3]);
-        assert_eq!(ints(batch.targets), [3, 4, 8]);
     }
 }

@@ -1,6 +1,8 @@
 //! LoRA adapters on every projection, initialized and clipped the way Hugging Face PEFT
 //! and the Trainer do, so their well-known hyperparameters carry over unchanged.
 
+use std::collections::HashMap;
+
 use burn::module::{Lora, Module, ModuleMapper, Param, ParamGroup, ParamId};
 use burn::nn::Linear;
 use burn::optim::GradientsParams;
@@ -89,6 +91,20 @@ pub fn forward(layer: &Linear, x: Tensor<3>) -> Tensor<3> {
     base + low_rank.mul_scalar(lora.scale)
 }
 
+/// The current adapter factors by path, in the form [`set_factors`] takes them back.
+pub fn factors(model: &Llama) -> HashMap<String, TensorData> {
+    let mut all = HashMap::new();
+    for (name, layer) in projections(model) {
+        let Some(lora) = layer.weight.adapter() else {
+            continue;
+        };
+        let path = format!("{}.weight.lora", name.trim_start_matches("model."));
+        all.insert(format!("{path}.a"), lora.a.val().into_data());
+        all.insert(format!("{path}.b"), lora.b.val().into_data());
+    }
+    all
+}
+
 /// Every linear layer inside the blocks, under its Hugging Face name.
 pub fn projections(model: &Llama) -> Vec<(String, &Linear)> {
     let mut all = Vec::new();
@@ -153,6 +169,17 @@ mod tests {
         assert!(a.clone().abs().max().into_scalar::<f32>() > bound / 2.0);
         assert!(a.is_require_grad());
         assert_eq!(lora.b.val().abs().max().into_scalar::<f32>(), 0.0);
+    }
+
+    #[test]
+    fn factors_round_trip_through_set_factors() {
+        let device = Device::flex().autodiff();
+        let model = attach(Llama::new(&tiny("llama"), &device), 4, 8.0);
+        let saved = factors(&model);
+        assert_eq!(saved.len(), 2 * 7 * 2);
+        let other = attach(Llama::new(&tiny("llama"), &device), 4, 8.0);
+        let restored = set_factors(other, |path, _| saved.get(path).cloned());
+        assert_eq!(factors(&restored), saved);
     }
 
     #[test]

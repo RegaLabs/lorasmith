@@ -9,7 +9,7 @@ use burn::module::Module;
 use burn::store::{
     BurnToPyTorchAdapter, FloatCastAdapter, ModuleAdapter, ModuleSnapshot, SafetensorsStore,
 };
-use burn::tensor::{DType, Tensor, TensorData};
+use burn::tensor::{DType, Device, Tensor, TensorData};
 use safetensors::{Dtype, tensor::TensorView};
 use serde_json::json;
 
@@ -35,6 +35,9 @@ pub fn all(
     dir: &Path,
 ) -> Result<Option<anyhow::Error>> {
     std::fs::create_dir_all(dir).with_context(|| format!("can't create {}", dir.display()))?;
+    // Merging builds a second full set of weights. RAM has room for that; a small GPU,
+    // still holding the trained model, often doesn't.
+    let model = model.to_device(&Device::flex());
     adapter(&model, base, dir)?;
     merged(model, model_dir, &dir.join("merged"))?;
     // Ollama runs GGUF on every machine, but runs a safetensors folder only where it has MLX.
@@ -166,7 +169,7 @@ mod tests {
     use super::*;
     use crate::data::Example;
     use crate::train::{self, Options};
-    use burn::tensor::{Device, Int, Tolerance};
+    use burn::tensor::{Int, Tolerance};
     use std::path::PathBuf;
 
     const BASE: &str = "tests/fixtures/llama";
@@ -184,7 +187,7 @@ mod tests {
             batch_size: 1,
             ..Options::default()
         };
-        train::train(model, &[example], &options, device, |_| ())
+        train::train(model, &[example], &[], &options, device, |_| ())
     }
 
     fn temp(name: &str) -> PathBuf {

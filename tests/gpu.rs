@@ -36,7 +36,7 @@ fn trains_on_the_best_device() {
     let start = Instant::now();
     let mut last = start;
     let mut losses = Vec::new();
-    train::train(model, &examples, &options, &device, |p| {
+    train::train(model, &examples, &[], &options, &device, |p| {
         println!(
             "step {}/{}  loss {:.3}  {:.2}s",
             p.step,

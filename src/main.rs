@@ -66,12 +66,14 @@ fn train(args: TrainArgs) -> Result<()> {
         println!("Model   {} ({:.2}B parameters)", args.model, size / 1e9);
     })?;
     let dataset = data::load(&args.data, &model.dir, args.max_len)?;
+    let (examples, validation) = train::split(dataset.examples, Options::default().seed);
     println!(
-        "Data    {} examples ({} cut to {} tokens, {} skipped)",
-        dataset.examples.len(),
+        "Data    {} examples ({} cut to {} tokens, {} skipped, {} held out to check progress)",
+        examples.len() + validation.len(),
         dataset.truncated,
         args.max_len,
-        dataset.skipped
+        dataset.skipped,
+        validation.len()
     );
 
     let found = if args.cpu {
@@ -87,32 +89,43 @@ fn train(args: TrainArgs) -> Result<()> {
         learning_rate: args.learning_rate,
         epochs: args
             .epochs
-            .unwrap_or_else(|| train::epochs_for(dataset.examples.len(), args.batch_size)),
+            .unwrap_or_else(|| train::epochs_for(examples.len(), args.batch_size)),
         batch_size: args.batch_size,
         ..Options::default()
     };
-    let steps = dataset.examples.len().div_ceil(options.batch_size) * options.epochs;
+    let steps = examples.len().div_ceil(options.batch_size) * options.epochs;
     println!("Train   {} epochs, {steps} steps", options.epochs);
     let start = Instant::now();
     let mut after_first = None;
+    let mut scores = Vec::new();
     let trained = device::guard(|| -> Result<_> {
         let (_, base) = load::model(&model.dir, &device)?;
         let base = train::attach(base, &options);
         Ok(train::train(
             base,
-            &dataset.examples,
+            &examples,
+            &validation,
             &options,
             &device,
             |p| {
                 // The first step compiles GPU kernels, so it says little about the rest.
                 let first = *after_first.get_or_insert_with(Instant::now);
-                report(&p, first.elapsed(), terminal)
+                report(&p, first.elapsed(), terminal);
+                scores.extend(p.validation);
             },
         ))
     })
     .and_then(|trained| trained)
     // A progress line may still be open on the terminal.
     .inspect_err(|_| println!())?;
+
+    let best = (0..scores.len()).min_by(|&a, &b| scores[a].total_cmp(&scores[b]));
+    if let Some(best) = best.filter(|&best| best + 1 < scores.len()) {
+        println!(
+            "Kept    epoch {}, which did best on the held-out examples",
+            best + 1
+        );
+    }
 
     let out = args.out.unwrap_or_else(|| free_run_dir(&args.data));
     let skipped = device::guard(|| export::all(trained, &model.id, &model.dir, &out))??;
@@ -164,6 +177,12 @@ fn report(progress: &Progress, since_first: Duration, terminal: bool) {
         || progress.step == progress.total
     {
         println!("{line}");
+    }
+    if let Some(score) = progress.validation {
+        if terminal && progress.step < progress.total {
+            println!();
+        }
+        println!("Epoch   {}  validation loss {score:.3}", progress.epoch);
     }
 }
 
