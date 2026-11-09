@@ -43,6 +43,17 @@ pub struct Progress {
     pub loss: f32,
 }
 
+/// About how many optimizer steps a small dataset needs before the adapter has learned it.
+/// SmolLM2-135M learned a 36-example persona in 72 steps at lr 2e-4, and nothing in 27.
+const TARGET_STEPS: usize = 75;
+
+/// Epochs for `examples` examples: enough for about `TARGET_STEPS` steps, but never fewer
+/// than 3 passes, and at most 10 so a handful of examples isn't memorized word for word.
+pub fn epochs_for(examples: usize, batch_size: usize) -> usize {
+    let steps_per_epoch = examples.div_ceil(batch_size).max(1);
+    TARGET_STEPS.div_ceil(steps_per_epoch).clamp(3, 10)
+}
+
 /// Freezes `model` and attaches fresh adapters. The output doesn't change until training starts.
 pub fn attach(model: Llama, options: &Options) -> Llama {
     Device::flex().seed(options.seed);
@@ -220,6 +231,13 @@ mod tests {
             losses[39]
         );
         assert_eq!(embeddings, model.embed_tokens.weight.val().into_data());
+    }
+
+    #[test]
+    fn small_datasets_get_more_epochs() {
+        assert_eq!(epochs_for(36, 4), 9);
+        assert_eq!(epochs_for(4, 4), 10);
+        assert_eq!(epochs_for(1000, 4), 3);
     }
 
     #[test]

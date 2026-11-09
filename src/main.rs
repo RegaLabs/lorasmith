@@ -31,8 +31,9 @@ struct TrainArgs {
     /// Where to write the results. Defaults to runs/<data file name>.
     #[arg(long)]
     out: Option<PathBuf>,
-    #[arg(long, default_value_t = Options::default().epochs)]
-    epochs: usize,
+    /// Passes over the data. Defaults to about 75 steps' worth, between 3 and 10.
+    #[arg(long)]
+    epochs: Option<usize>,
     #[arg(long, default_value_t = Options::default().learning_rate)]
     learning_rate: f64,
     #[arg(long, default_value_t = Options::default().batch_size)]
@@ -85,10 +86,14 @@ fn train(args: TrainArgs) -> Result<()> {
         rank: args.rank,
         alpha: 2.0 * args.rank as f64,
         learning_rate: args.learning_rate,
-        epochs: args.epochs,
+        epochs: args
+            .epochs
+            .unwrap_or_else(|| train::epochs_for(dataset.examples.len(), args.batch_size)),
         batch_size: args.batch_size,
         ..Options::default()
     };
+    let steps = dataset.examples.len().div_ceil(options.batch_size) * options.epochs;
+    println!("Train   {} epochs, {steps} steps", options.epochs);
     let start = Instant::now();
     let mut after_first = None;
     let trained = train::train(
