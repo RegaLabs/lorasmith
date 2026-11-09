@@ -8,5 +8,6 @@ pub mod export;
 pub mod gguf;
 pub mod hub;
 pub mod load;
+pub mod lora;
 pub mod model;
 pub mod train;

@@ -1,0 +1,56 @@
+{
+ "examples": [
+  {
+   "tokens": [
+    3,
+    1,
+    4,
+    1,
+    5,
+    9,
+    2,
+    6
+   ],
+   "train": [
+    false,
+    false,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+   ]
+  },
+  {
+   "tokens": [
+    2,
+    7,
+    1,
+    8,
+    2
+   ],
+   "train": [
+    false,
+    true,
+    true,
+    true,
+    true
+   ]
+  }
+ ],
+ "rank": 4,
+ "alpha": 8.0,
+ "learning_rate": 0.01,
+ "max_grad_norm": 0.1,
+ "losses": [
+  4.297860145568848,
+  4.252228736877441,
+  4.209479331970215
+ ],
+ "grad_norms_before_clipping": [
+  0.1463734358549118,
+  0.13537795841693878,
+  0.13513676822185516
+ ]
+}

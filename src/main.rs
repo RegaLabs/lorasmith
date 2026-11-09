@@ -87,6 +87,7 @@ fn train(args: TrainArgs) -> Result<()> {
         learning_rate: args.learning_rate,
         epochs: args.epochs,
         batch_size: args.batch_size,
+        ..Options::default()
     };
     let start = Instant::now();
     let mut after_first = None;

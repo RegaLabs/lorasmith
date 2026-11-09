@@ -6,7 +6,6 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use burn::module::Module;
-use burn::nn::Linear;
 use burn::store::{BurnToPyTorchAdapter, ModuleSnapshot, SafetensorsStore};
 use burn::tensor::{Tensor, TensorData};
 use safetensors::{Dtype, tensor::TensorView};
@@ -54,7 +53,7 @@ pub fn adapter(model: &Llama, base: &str, dir: &Path) -> Result<()> {
     let mut tensors = Vec::new();
     let mut targets = Vec::new();
     let mut rank_and_scale = None;
-    for (name, linear) in projections(model) {
+    for (name, linear) in crate::lora::projections(model) {
         let Some(lora) = linear.weight.adapter() else {
             continue;
         };
@@ -119,26 +118,6 @@ pub fn merged(model: Llama, model_dir: &Path, dir: &Path) -> Result<()> {
         .materialize()
         .save_into(&mut store)
         .with_context(|| format!("can't write the merged model to {}", dir.display()))
-}
-
-/// Every linear layer inside the blocks, under its Hugging Face name.
-fn projections(model: &Llama) -> Vec<(String, &Linear)> {
-    let mut all = Vec::new();
-    for (i, block) in model.layers.iter().enumerate() {
-        let (attn, mlp) = (&block.self_attn, &block.mlp);
-        for (name, linear) in [
-            ("self_attn.q_proj", &attn.q_proj),
-            ("self_attn.k_proj", &attn.k_proj),
-            ("self_attn.v_proj", &attn.v_proj),
-            ("self_attn.o_proj", &attn.o_proj),
-            ("mlp.gate_proj", &mlp.gate_proj),
-            ("mlp.up_proj", &mlp.up_proj),
-            ("mlp.down_proj", &mlp.down_proj),
-        ] {
-            all.push((format!("model.layers.{i}.{name}"), linear));
-        }
-    }
-    all
 }
 
 fn write_safetensors(tensors: Vec<(String, Tensor<2>)>, path: &Path) -> Result<()> {

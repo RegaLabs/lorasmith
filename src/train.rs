@@ -2,18 +2,14 @@
 
 use std::f64::consts::PI;
 
-use burn::grad_clipping::GradientClippingConfig;
-use burn::module::{Lora, Module, ParamGroup};
-use burn::optim::{AdamWConfig, GradientsParams};
+use burn::optim::{AdamWConfig, GradientsParams, ModuleOptimizer};
 use burn::tensor::{Device, Int, Tensor, TensorData, activation};
 
 use crate::data::Example;
+use crate::lora;
 use crate::model::Llama;
 
-/// Every projection inside the blocks gets an adapter, as the QLoRA paper recommends.
-/// Embeddings and the output head stay as they are.
-const TARGETS: &str = r"\.(q|k|v|o|gate|up|down)_proj\.weight$";
-
+/// Training settings. The defaults are the common choices for LoRA with Hugging Face PEFT.
 #[derive(Debug, Clone)]
 pub struct Options {
     pub rank: usize,
@@ -21,6 +17,10 @@ pub struct Options {
     pub learning_rate: f64,
     pub epochs: usize,
     pub batch_size: usize,
+    /// Gradients are scaled down together when their combined norm exceeds this.
+    pub max_grad_norm: f64,
+    /// Picks the adapters' starting values and the order of examples, so runs repeat exactly.
+    pub seed: u64,
 }
 
 impl Default for Options {
@@ -31,6 +31,8 @@ impl Default for Options {
             learning_rate: 2e-4,
             epochs: 3,
             batch_size: 4,
+            max_grad_norm: 1.0,
+            seed: 42,
         }
     }
 }
@@ -43,11 +45,21 @@ pub struct Progress {
 
 /// Freezes `model` and attaches fresh adapters. The output doesn't change until training starts.
 pub fn attach(model: Llama, options: &Options) -> Llama {
-    let targets = ParamGroup::from_regex(TARGETS).expect("TARGETS is a valid regex");
-    model.apply_lora(Lora::new(options.rank, options.alpha).set_param_group(targets))
+    Device::flex().seed(options.seed);
+    lora::attach(model, options.rank, options.alpha)
 }
 
-/// Trains the adapters on `examples`. `device` must be an autodiff device holding `model`.
+/// The optimizer `train` uses: AdamW with PyTorch's defaults and no weight decay,
+/// which is what the Hugging Face Trainer uses for LoRA.
+pub fn optimizer() -> ModuleOptimizer {
+    AdamWConfig::new()
+        .with_epsilon(1e-8)
+        .with_weight_decay(0.0)
+        .init()
+}
+
+/// Trains the adapters on `examples`, reshuffled every epoch.
+/// `device` must be an autodiff device holding `model`.
 pub fn train(
     mut model: Llama,
     examples: &[Example],
@@ -55,31 +67,65 @@ pub fn train(
     device: &Device,
     mut report: impl FnMut(Progress),
 ) -> Llama {
-    let mut optimizer = AdamWConfig::new()
-        .with_weight_decay(0.0)
-        .with_grad_clipping(Some(GradientClippingConfig::Norm(1.0)))
-        .init();
-    let batches: Vec<&[Example]> = examples.chunks(options.batch_size).collect();
-    let total = batches.len() * options.epochs;
-
-    for step in 0..total {
-        let (inputs, targets, mask) = batch_tensors(batches[step % batches.len()], device);
-        let loss = masked_loss(model.forward(inputs), targets, mask);
-        let value: f32 = loss.clone().into_scalar();
-        let grads = GradientsParams::from_grads(loss.backward(), &model);
-        model = optimizer.step(learning_rate(options, step, total), model, grads);
-        report(Progress {
-            step: step + 1,
-            total,
-            loss: value,
-        });
+    let mut optimizer = optimizer();
+    let total = examples.len().div_ceil(options.batch_size) * options.epochs;
+    let mut step = 0;
+    for epoch in 0..options.epochs {
+        let order = shuffled(examples.len(), options.seed.wrapping_add(epoch as u64));
+        for indices in order.chunks(options.batch_size) {
+            let batch: Vec<&Example> = indices.iter().map(|&i| &examples[i]).collect();
+            let lr = learning_rate(options, step, total);
+            let loss;
+            (model, loss) = self::step(
+                model,
+                &mut optimizer,
+                &batch,
+                lr,
+                options.max_grad_norm,
+                device,
+            );
+            step += 1;
+            report(Progress { step, total, loss });
+        }
     }
     model
 }
 
+/// One optimizer step on one batch. Returns the updated model and the batch's loss before the step.
+pub fn step(
+    model: Llama,
+    optimizer: &mut ModuleOptimizer,
+    batch: &[&Example],
+    learning_rate: f64,
+    max_grad_norm: f64,
+    device: &Device,
+) -> (Llama, f32) {
+    let (inputs, targets, mask) = batch_tensors(batch, device);
+    let loss = masked_loss(model.forward(inputs), targets, mask);
+    let value: f32 = loss.clone().into_scalar();
+    let grads = GradientsParams::from_grads(loss.backward(), &model);
+    let grads = lora::clip_grad_norm(&model, grads, max_grad_norm);
+    (optimizer.step(learning_rate, model, grads), value)
+}
+
+/// Indices `0..len` in a random order that depends only on `seed` (splitmix64 + Fisher-Yates).
+fn shuffled(len: usize, seed: u64) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    let mut state = seed;
+    for i in (1..len).rev() {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        order.swap(i, (z % (i as u64 + 1)) as usize);
+    }
+    order
+}
+
 /// Shifts tokens by one so each position predicts the next, padding the batch to its longest example.
 fn batch_tensors(
-    batch: &[Example],
+    batch: &[&Example],
     device: &Device,
 ) -> (Tensor<2, Int>, Tensor<2, Int>, Tensor<2>) {
     let len = batch.iter().map(|e| e.tokens.len() - 1).max().unwrap_or(0);
@@ -177,6 +223,17 @@ mod tests {
     }
 
     #[test]
+    fn shuffling_is_a_repeatable_permutation() {
+        let order = shuffled(10, 42);
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(sorted, (0..10).collect::<Vec<_>>());
+        assert_eq!(order, shuffled(10, 42));
+        assert_ne!(order, shuffled(10, 43));
+        assert_ne!(order, sorted);
+    }
+
+    #[test]
     fn padding_and_prompt_tokens_are_masked_out() {
         let device = Device::flex();
         let batch = [
@@ -189,7 +246,7 @@ mod tests {
                 train: vec![true, true],
             },
         ];
-        let (inputs, targets, mask) = batch_tensors(&batch, &device);
+        let (inputs, targets, mask) = batch_tensors(&[&batch[0], &batch[1]], &device);
         assert_eq!(inputs.dims(), [2, 3]);
         assert_eq!(
             targets

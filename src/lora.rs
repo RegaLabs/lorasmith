@@ -1,0 +1,156 @@
+//! LoRA adapters on every projection, initialized and clipped the way Hugging Face PEFT
+//! and the Trainer do, so their well-known hyperparameters carry over unchanged.
+
+use burn::module::{Lora, Module, ModuleMapper, Param, ParamGroup, ParamId};
+use burn::nn::Linear;
+use burn::optim::GradientsParams;
+use burn::tensor::{Device, Distribution, Tensor, TensorData};
+
+use crate::model::Llama;
+
+/// Every projection inside the blocks gets an adapter, as the QLoRA paper recommends.
+/// Embeddings and the output head stay as they are.
+const TARGETS: &str = r"\.(q|k|v|o|gate|up|down)_proj\.weight$";
+
+/// Freezes `model` and attaches fresh adapters. As in PEFT, A is uniform in ±1/√in and
+/// B is zero, so the output doesn't change until training starts.
+pub fn attach(model: Llama, rank: usize, alpha: f64) -> Llama {
+    let targets = ParamGroup::from_regex(TARGETS).expect("TARGETS is a valid regex");
+    let model = model.apply_lora(Lora::new(rank, alpha).set_param_group(targets));
+    // Burn draws A from Normal(0, 1/rank), which for a 576-wide layer is 2.6 times PEFT's
+    // spread and makes the same learning rate act that much stronger.
+    set_factors(model, |path, shape| {
+        if !path.ends_with(".lora.a") {
+            return None;
+        }
+        let bound = 1.0 / (shape[0] as f64).sqrt();
+        let a = Tensor::<2>::random(
+            [shape[0], shape[1]],
+            Distribution::Uniform(-bound, bound),
+            &Device::flex(),
+        );
+        Some(a.into_data())
+    })
+}
+
+/// Replaces adapter factors. `values` gets each parameter's path, such as
+/// `layers.0.self_attn.q_proj.weight.lora.a`, and its shape, and returns new data or `None`.
+pub fn set_factors(
+    model: Llama,
+    values: impl FnMut(&str, &[usize]) -> Option<TensorData>,
+) -> Llama {
+    let mut setter = Setter {
+        path: Vec::new(),
+        values,
+    };
+    model.map(&mut setter)
+}
+
+struct Setter<F> {
+    path: Vec<String>,
+    values: F,
+}
+
+impl<F: FnMut(&str, &[usize]) -> Option<TensorData>> ModuleMapper for Setter<F> {
+    fn enter_module(&mut self, name: &str, _container: &str) {
+        self.path.push(name.to_string());
+    }
+
+    fn exit_module(&mut self, _name: &str, _container: &str) {
+        self.path.pop();
+    }
+
+    fn map_float<const D: usize>(&mut self, param: Param<Tensor<D>>) -> Param<Tensor<D>> {
+        let path = self.path.join(".");
+        let shape = param.lazy_shape().to_vec();
+        match (self.values)(&path, &shape) {
+            Some(data) => param.map(|old| {
+                let trainable = old.is_require_grad();
+                Tensor::from_data(data, &old.device()).set_require_grad(trainable)
+            }),
+            None => param,
+        }
+    }
+}
+
+/// Every linear layer inside the blocks, under its Hugging Face name.
+pub fn projections(model: &Llama) -> Vec<(String, &Linear)> {
+    let mut all = Vec::new();
+    for (i, block) in model.layers.iter().enumerate() {
+        let (attn, mlp) = (&block.self_attn, &block.mlp);
+        for (name, linear) in [
+            ("self_attn.q_proj", &attn.q_proj),
+            ("self_attn.k_proj", &attn.k_proj),
+            ("self_attn.v_proj", &attn.v_proj),
+            ("self_attn.o_proj", &attn.o_proj),
+            ("mlp.gate_proj", &mlp.gate_proj),
+            ("mlp.up_proj", &mlp.up_proj),
+            ("mlp.down_proj", &mlp.down_proj),
+        ] {
+            all.push((format!("model.layers.{i}.{name}"), linear));
+        }
+    }
+    all
+}
+
+/// Scales all adapter gradients together so their combined norm is at most `max_norm`,
+/// like `torch.nn.utils.clip_grad_norm_`. Burn's own clipping limits each tensor separately,
+/// which lets hundreds of adapter tensors through at many times the intended norm.
+pub fn clip_grad_norm(model: &Llama, mut grads: GradientsParams, max_norm: f64) -> GradientsParams {
+    let ids: Vec<ParamId> = projections(model)
+        .iter()
+        .filter_map(|(_, linear)| linear.weight.adapter())
+        .flat_map(|lora| [lora.a.id, lora.b.id])
+        .collect();
+    let squares: Vec<Tensor<1>> = ids
+        .iter()
+        .filter_map(|id| grads.get::<2>(*id))
+        .map(|grad| grad.powi_scalar(2).sum())
+        .collect();
+    if squares.is_empty() {
+        return grads;
+    }
+    let norm = Tensor::cat(squares, 0).sum().sqrt().into_scalar::<f32>() as f64;
+    let scale = (max_norm / (norm + 1e-6)).min(1.0);
+    for id in ids {
+        if let Some(grad) = grads.remove::<2>(id) {
+            grads.register(id, grad.mul_scalar(scale));
+        }
+    }
+    grads
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::tiny;
+
+    #[test]
+    fn a_starts_uniform_like_peft_and_b_at_zero() {
+        let device = Device::flex().autodiff();
+        let model = attach(Llama::new(&tiny("llama"), &device), 4, 8.0);
+        let lora = model.layers[0].mlp.down_proj.weight.adapter().unwrap();
+        let bound = 1.0 / 48f32.sqrt();
+        let a = lora.a.val();
+        assert_eq!(a.dims(), [48, 4]);
+        assert!(a.clone().abs().max().into_scalar::<f32>() <= bound);
+        assert!(a.clone().abs().max().into_scalar::<f32>() > bound / 2.0);
+        assert!(a.is_require_grad());
+        assert_eq!(lora.b.val().abs().max().into_scalar::<f32>(), 0.0);
+    }
+
+    #[test]
+    fn set_factors_sees_adapter_paths() {
+        let device = Device::flex().autodiff();
+        let mut seen = Vec::new();
+        let model = attach(Llama::new(&tiny("llama"), &device), 4, 8.0);
+        set_factors(model, |path, _| {
+            seen.push(path.to_string());
+            None
+        });
+        assert!(
+            seen.contains(&"layers.1.self_attn.q_proj.weight.lora.b".to_string()),
+            "{seen:?}"
+        );
+    }
+}
