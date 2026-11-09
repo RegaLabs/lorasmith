@@ -4,11 +4,12 @@ use std::f64::consts::PI;
 
 use burn::module::Module;
 use burn::nn::{Embedding, EmbeddingConfig, Linear, LinearConfig, RmsNorm, RmsNormConfig};
-use burn::tensor::module::attention;
+use burn::tensor::module::{attention, linear};
 use burn::tensor::ops::AttentionModuleOptions;
 use burn::tensor::{Device, Int, Tensor, TensorData, activation};
 
 use crate::config::Config;
+use crate::lora;
 
 #[derive(Module, Debug)]
 pub struct Llama {
@@ -103,14 +104,23 @@ impl Llama {
 
     /// Token ids `[batch, seq]` in, next-token logits `[batch, seq, vocab]` out.
     pub fn forward(&self, tokens: Tensor<2, Int>) -> Tensor<3> {
+        self.logits(self.hidden(tokens))
+    }
+
+    /// Final hidden states `[batch, seq, hidden]`, before the output head.
+    pub fn hidden(&self, tokens: Tensor<2, Int>) -> Tensor<3> {
         let mut x = self.embed_tokens.forward(tokens);
         for block in &self.layers {
             x = block.forward(x, &self.rope);
         }
-        let x = self.norm.forward(x);
+        self.norm.forward(x)
+    }
+
+    /// Vocabulary logits for hidden states of any leading shape.
+    pub fn logits<const D: usize>(&self, x: Tensor<D>) -> Tensor<D> {
         match &self.lm_head {
             Some(head) => head.forward(x),
-            None => x.matmul(self.embed_tokens.weight.val().transpose().unsqueeze()),
+            None => linear(x, self.embed_tokens.weight.val().transpose(), None),
         }
     }
 }
@@ -132,9 +142,9 @@ impl Attention {
             t.reshape([batch, seq, heads, self.head_dim])
                 .swap_dims(1, 2)
         };
-        let mut q = split(self.q_proj.forward(x.clone()), self.heads);
-        let mut k = split(self.k_proj.forward(x.clone()), self.kv_heads);
-        let v = split(self.v_proj.forward(x), self.kv_heads);
+        let mut q = split(lora::forward(&self.q_proj, x.clone()), self.heads);
+        let mut k = split(lora::forward(&self.k_proj, x.clone()), self.kv_heads);
+        let v = split(lora::forward(&self.v_proj, x), self.kv_heads);
 
         if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
             q = q_norm.forward(q);
@@ -155,7 +165,8 @@ impl Attention {
             None,
             options,
         );
-        self.o_proj.forward(
+        lora::forward(
+            &self.o_proj,
             out.swap_dims(1, 2)
                 .reshape([batch, seq, self.heads * self.head_dim]),
         )
@@ -175,8 +186,8 @@ impl Attention {
 
 impl Mlp {
     fn forward(&self, x: Tensor<3>) -> Tensor<3> {
-        let gate = activation::silu(self.gate_proj.forward(x.clone()));
-        self.down_proj.forward(gate * self.up_proj.forward(x))
+        let gate = activation::silu(lora::forward(&self.gate_proj, x.clone()));
+        lora::forward(&self.down_proj, gate * lora::forward(&self.up_proj, x))
     }
 }
 

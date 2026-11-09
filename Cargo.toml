@@ -13,6 +13,9 @@ categories = ["science", "command-line-utilities"]
 default = []
 cuda = ["burn/cuda"]
 rocm = ["burn/rocm"]
+# Benchmarks GPU kernels on first use. About 20% faster training, but the benchmarks need
+# enough extra memory that a 0.5B model no longer fits a 4 GB GPU.
+autotune = ["burn/autotune"]
 
 [dependencies]
 anyhow = "1"
@@ -21,7 +24,6 @@ burn = { version = "0.22.1", default-features = false, features = [
     "autodiff",
     "optim",
     "fusion",
-    "autotune",
     "wgpu",
     "flex",
     "safetensors",

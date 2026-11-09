@@ -6,8 +6,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use burn::module::Module;
-use burn::store::{BurnToPyTorchAdapter, ModuleSnapshot, SafetensorsStore};
-use burn::tensor::{Tensor, TensorData};
+use burn::store::{
+    BurnToPyTorchAdapter, FloatCastAdapter, ModuleAdapter, ModuleSnapshot, SafetensorsStore,
+};
+use burn::tensor::{DType, Tensor, TensorData};
 use safetensors::{Dtype, tensor::TensorView};
 use serde_json::json;
 
@@ -108,8 +110,9 @@ pub fn merged(model: Llama, model_dir: &Path, dir: &Path) -> Result<()> {
     }
 
     // transformers refuses safetensors files whose "format" metadata isn't "pt".
+    let to_hf = BurnToPyTorchAdapter.chain(FloatCastAdapter::to(published_dtype(model_dir)));
     let mut store = SafetensorsStore::from_file(dir.join("model.safetensors"))
-        .with_to_adapter(BurnToPyTorchAdapter)
+        .with_to_adapter(to_hf)
         .with_key_remapping(r"^(embed_tokens|layers|norm)", "model.$1")
         .clear_metadata()
         .metadata("format", "pt")
@@ -118,6 +121,21 @@ pub fn merged(model: Llama, model_dir: &Path, dir: &Path) -> Result<()> {
         .materialize()
         .save_into(&mut store)
         .with_context(|| format!("can't write the merged model to {}", dir.display()))
+}
+
+/// The precision the base model was published in. Training runs in f32, but writing the
+/// merged model that way would make it twice the size of the original for no gain.
+fn published_dtype(model_dir: &Path) -> DType {
+    let config: serde_json::Value = std::fs::read_to_string(model_dir.join("config.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    // transformers 5 writes `dtype`; older versions wrote `torch_dtype`.
+    match config["dtype"].as_str().or(config["torch_dtype"].as_str()) {
+        Some("bfloat16") => DType::BF16,
+        Some("float16") => DType::F16,
+        _ => DType::F32,
+    }
 }
 
 fn write_safetensors(tensors: Vec<(String, Tensor<2>)>, path: &Path) -> Result<()> {
@@ -205,6 +223,15 @@ mod tests {
             std::fs::read_to_string(dir.join("Modelfile")).unwrap(),
             "FROM ./merged\n"
         );
+    }
+
+    #[test]
+    fn merged_model_keeps_the_published_precision() {
+        assert_eq!(
+            published_dtype(Path::new("tests/fixtures/smollm2")),
+            DType::BF16
+        );
+        assert_eq!(published_dtype(Path::new(BASE)), DType::F32);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 use burn::module::{Lora, Module, ModuleMapper, Param, ParamGroup, ParamId};
 use burn::nn::Linear;
 use burn::optim::GradientsParams;
+use burn::tensor::module::linear;
 use burn::tensor::{Device, Distribution, Tensor, TensorData};
 
 use crate::model::Llama;
@@ -71,6 +72,21 @@ impl<F: FnMut(&str, &[usize]) -> Option<TensorData>> ModuleMapper for Setter<F> 
             None => param,
         }
     }
+}
+
+/// Applies `layer` to `x` the way PEFT does: x·W + s·((x·A)·B).
+///
+/// Burn's own forward builds the full W + s·A·B for every call, and autodiff then keeps a
+/// weight-sized gradient for it: two extra copies of every projection, enough to push a
+/// 0.5B model out of a 4 GB GPU. This way the extra memory is only rank-sized.
+pub fn forward(layer: &Linear, x: Tensor<3>) -> Tensor<3> {
+    let Some(lora) = layer.weight.adapter() else {
+        return layer.forward(x);
+    };
+    let bias = layer.bias.as_ref().map(|b| b.val());
+    let base = linear(x.clone(), layer.weight.base(), bias);
+    let low_rank = linear(linear(x, lora.a.val(), None), lora.b.val(), None);
+    base + low_rank.mul_scalar(lora.scale)
 }
 
 /// Every linear layer inside the blocks, under its Hugging Face name.

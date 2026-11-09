@@ -111,8 +111,7 @@ pub fn step(
     max_grad_norm: f64,
     device: &Device,
 ) -> (Llama, f32) {
-    let (inputs, targets, mask) = batch_tensors(batch, device);
-    let loss = masked_loss(model.forward(inputs), targets, mask);
+    let loss = loss(&model, batch_tensors(batch, device));
     let value: f32 = loss.clone().into_scalar();
     let grads = GradientsParams::from_grads(loss.backward(), &model);
     let grads = lora::clip_grad_norm(&model, grads, max_grad_norm);
@@ -134,40 +133,48 @@ fn shuffled(len: usize, seed: u64) -> Vec<usize> {
     order
 }
 
-/// Shifts tokens by one so each position predicts the next, padding the batch to its longest example.
-fn batch_tensors(
-    batch: &[&Example],
-    device: &Device,
-) -> (Tensor<2, Int>, Tensor<2, Int>, Tensor<2>) {
-    let len = batch.iter().map(|e| e.tokens.len() - 1).max().unwrap_or(0);
-    let (mut inputs, mut targets, mut mask) = (Vec::new(), Vec::new(), Vec::new());
-    for example in batch {
-        let n = example.tokens.len() - 1;
-        let padding = len - n;
-        inputs.extend(example.tokens[..n].iter().map(|&t| t as i64));
-        targets.extend(example.tokens[1..].iter().map(|&t| t as i64));
-        mask.extend(
-            example.train[1..]
-                .iter()
-                .map(|&t| if t { 1.0f32 } else { 0.0 }),
-        );
-        inputs.extend(std::iter::repeat_n(0, padding));
-        targets.extend(std::iter::repeat_n(0, padding));
-        mask.extend(std::iter::repeat_n(0.0, padding));
-    }
-    let shape = [batch.len(), len];
-    (
-        Tensor::from_data(TensorData::new(inputs, shape), device),
-        Tensor::from_data(TensorData::new(targets, shape), device),
-        Tensor::from_data(TensorData::new(mask, shape), device),
-    )
+/// What one batch trains on: padded inputs, and for every position that counts toward
+/// the loss, its index in the flattened `[batch * seq]` grid and the token it should predict.
+struct Batch {
+    inputs: Tensor<2, Int>,
+    positions: Tensor<1, Int>,
+    targets: Tensor<1, Int>,
 }
 
-/// Mean cross-entropy over the positions marked for training.
-fn masked_loss(logits: Tensor<3>, targets: Tensor<2, Int>, mask: Tensor<2>) -> Tensor<1> {
-    let log_probs = activation::log_softmax(logits, 2);
-    let picked: Tensor<2> = log_probs.gather(2, targets.unsqueeze_dim(2)).squeeze_dim(2);
-    (picked * mask.clone()).sum().neg() / mask.sum()
+/// Shifts tokens by one so each position predicts the next, padding to the longest example.
+fn batch_tensors(batch: &[&Example], device: &Device) -> Batch {
+    let len = batch.iter().map(|e| e.tokens.len() - 1).max().unwrap_or(0);
+    let (mut inputs, mut positions, mut targets) = (Vec::new(), Vec::new(), Vec::new());
+    for (row, example) in batch.iter().enumerate() {
+        let n = example.tokens.len() - 1;
+        inputs.extend(example.tokens[..n].iter().map(|&t| t as i64));
+        inputs.extend(std::iter::repeat_n(0, len - n));
+        for i in 0..n {
+            if example.train[i + 1] {
+                positions.push((row * len + i) as i64);
+                targets.push(example.tokens[i + 1] as i64);
+            }
+        }
+    }
+    let count = positions.len();
+    Batch {
+        inputs: Tensor::from_data(TensorData::new(inputs, [batch.len(), len]), device),
+        positions: Tensor::from_data(TensorData::new(positions, [count]), device),
+        targets: Tensor::from_data(TensorData::new(targets, [count]), device),
+    }
+}
+
+/// Mean cross-entropy over the trained positions. Logits are computed for those positions
+/// only: with a 150k-token vocabulary, logits for every position of a long batch take gigabytes.
+fn loss(model: &Llama, batch: Batch) -> Tensor<1> {
+    let hidden = model.hidden(batch.inputs);
+    let [rows, len, width] = hidden.dims();
+    let picked = hidden
+        .reshape([rows * len, width])
+        .select(0, batch.positions);
+    let log_probs = activation::log_softmax(model.logits(picked), 1);
+    let chosen: Tensor<2> = log_probs.gather(1, batch.targets.unsqueeze_dim(1));
+    chosen.mean().neg()
 }
 
 /// Short linear warmup, then cosine decay to zero.
@@ -264,19 +271,10 @@ mod tests {
                 train: vec![true, true],
             },
         ];
-        let (inputs, targets, mask) = batch_tensors(&[&batch[0], &batch[1]], &device);
-        assert_eq!(inputs.dims(), [2, 3]);
-        assert_eq!(
-            targets
-                .into_data()
-                .convert::<i64>()
-                .try_to_vec::<i64>()
-                .unwrap(),
-            [2, 3, 4, 8, 0, 0]
-        );
-        assert_eq!(
-            mask.into_data().try_to_vec::<f32>().unwrap(),
-            [0.0, 1.0, 1.0, 1.0, 0.0, 0.0]
-        );
+        let batch = batch_tensors(&[&batch[0], &batch[1]], &device);
+        let ints = |t: Tensor<1, Int>| t.into_data().convert::<i64>().try_to_vec::<i64>().unwrap();
+        assert_eq!(batch.inputs.dims(), [2, 3]);
+        assert_eq!(ints(batch.positions), [1, 2, 3]);
+        assert_eq!(ints(batch.targets), [3, 4, 8]);
     }
 }

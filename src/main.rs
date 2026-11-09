@@ -81,7 +81,6 @@ fn train(args: TrainArgs) -> Result<()> {
     };
     println!("Device  {}", found.name);
     let device = found.device.autodiff();
-    let (_, base) = load::model(&model.dir, &device)?;
     let options = Options {
         rank: args.rank,
         alpha: 2.0 * args.rank as f64,
@@ -96,20 +95,28 @@ fn train(args: TrainArgs) -> Result<()> {
     println!("Train   {} epochs, {steps} steps", options.epochs);
     let start = Instant::now();
     let mut after_first = None;
-    let trained = train::train(
-        train::attach(base, &options),
-        &dataset.examples,
-        &options,
-        &device,
-        |p| {
-            // The first step compiles GPU kernels, so it says little about the rest.
-            let first = *after_first.get_or_insert_with(Instant::now);
-            report(&p, first.elapsed(), terminal)
-        },
-    );
+    let trained = device::guard(|| -> Result<_> {
+        let (_, base) = load::model(&model.dir, &device)?;
+        let base = train::attach(base, &options);
+        Ok(train::train(
+            base,
+            &dataset.examples,
+            &options,
+            &device,
+            |p| {
+                // The first step compiles GPU kernels, so it says little about the rest.
+                let first = *after_first.get_or_insert_with(Instant::now);
+                report(&p, first.elapsed(), terminal)
+            },
+        ))
+    })
+    .and_then(|trained| trained)
+    // A progress line may still be open on the terminal.
+    .inspect_err(|_| println!())?;
 
     let out = args.out.unwrap_or_else(|| free_run_dir(&args.data));
-    if let Some(reason) = export::all(trained, &model.id, &model.dir, &out)? {
+    let skipped = device::guard(|| export::all(trained, &model.id, &model.dir, &out))??;
+    if let Some(reason) = skipped {
         println!("\nNote    no GGUF file: {reason:#}");
         println!(
             "        Ollama can still run merged/ on Apple Silicon and NVIDIA RTX 20 series or newer."
