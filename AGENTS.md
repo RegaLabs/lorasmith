@@ -8,8 +8,8 @@ loraforge fine-tunes an open LLM on your own data with one command, on the machi
 
 ```bash
 loraforge train qwen2.5:1.5b my-data.jsonl
-ollama create my-model -f runs/latest/Modelfile
-ollama run my-model
+ollama create my-data -f runs/my-data/Modelfile
+ollama run my-data
 ```
 
 North star: **under 10 minutes from install to chatting with your fine-tuned model, on a normal laptop, no NVIDIA required.** When two choices compete, pick the one that gets closer to that.
