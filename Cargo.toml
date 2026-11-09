@@ -30,5 +30,6 @@ clap = { version = "4", features = ["derive"] }
 minijinja = { version = "3.1", features = ["json", "loop_controls", "serde"] }
 minijinja-contrib = { version = "3.1", features = ["pycompat"] }
 serde = { version = "1", features = ["derive"] }
+safetensors = "0.8"
 serde_json = "1"
 tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }

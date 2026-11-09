@@ -3974,6 +3974,7 @@ dependencies = [
  "clap",
  "minijinja",
  "minijinja-contrib",
+ "safetensors 0.8.0",
  "serde",
  "serde_json",
  "tokenizers",
