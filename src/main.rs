@@ -2,7 +2,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use loraforge::train::{Options, Progress};
 use loraforge::{data, device, export, hub, load, train};
@@ -95,6 +95,11 @@ fn train(args: TrainArgs) -> Result<()> {
     };
     let steps = examples.len().div_ceil(options.batch_size) * options.epochs;
     println!("Train   {} epochs, {steps} steps", options.epochs);
+    let out = args.out.unwrap_or_else(|| free_run_dir(&args.data));
+    // If training stops early, the adapter from the last finished epoch is still here.
+    let checkpoint = out.join("checkpoint");
+    std::fs::create_dir_all(&checkpoint)
+        .with_context(|| format!("can't create {}", checkpoint.display()))?;
     let start = Instant::now();
     let mut after_first = None;
     let mut scores = Vec::new();
@@ -112,6 +117,11 @@ fn train(args: TrainArgs) -> Result<()> {
                 let first = *after_first.get_or_insert_with(Instant::now);
                 report(&p, first.elapsed(), terminal);
                 scores.extend(p.validation);
+                if p.epoch_done
+                    && let Err(error) = export::adapter(p.model, &model.id, &checkpoint)
+                {
+                    println!("Note    couldn't save a checkpoint: {error:#}");
+                }
             },
         ))
     })
@@ -127,8 +137,9 @@ fn train(args: TrainArgs) -> Result<()> {
         );
     }
 
-    let out = args.out.unwrap_or_else(|| free_run_dir(&args.data));
     let skipped = device::guard(|| export::all(trained, &model.id, &model.dir, &out))??;
+    // The finished run holds the final adapter; the checkpoint was only a safety net.
+    std::fs::remove_dir_all(&checkpoint).ok();
     if let Some(reason) = skipped {
         println!("\nNote    no GGUF file: {reason:#}");
         println!(

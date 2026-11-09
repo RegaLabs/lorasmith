@@ -40,13 +40,17 @@ impl Default for Options {
     }
 }
 
-pub struct Progress {
+pub struct Progress<'a> {
     pub step: usize,
     pub total: usize,
     pub epoch: usize,
     pub loss: f32,
+    /// Whether this step finished an epoch.
+    pub epoch_done: bool,
     /// On the last step of each epoch: the loss on held-out examples, if there are any.
     pub validation: Option<f32>,
+    /// The model as trained so far, for example to save a checkpoint.
+    pub model: &'a Llama,
 }
 
 /// Holds out about a tenth of `examples`, picked by `seed`, to measure how training
@@ -120,7 +124,7 @@ pub fn train(
     validation: &[Example],
     options: &Options,
     device: &Device,
-    mut report: impl FnMut(Progress),
+    mut report: impl FnMut(Progress<'_>),
 ) -> Llama {
     let mut optimizer = optimizer();
     let per_epoch = examples.len().div_ceil(options.batch_size);
@@ -142,7 +146,8 @@ pub fn train(
                 device,
             );
             step += 1;
-            let checked = i + 1 == per_epoch && !validation.is_empty();
+            let epoch_done = i + 1 == per_epoch;
+            let checked = epoch_done && !validation.is_empty();
             let score = checked.then(|| evaluate(&model, validation, options.batch_size, device));
             if let Some(score) = score
                 && best.as_ref().is_none_or(|(lowest, _)| score < *lowest)
@@ -154,7 +159,9 @@ pub fn train(
                 total,
                 epoch: epoch + 1,
                 loss,
+                epoch_done,
                 validation: score,
+                model: &model,
             });
         }
     }

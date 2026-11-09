@@ -33,7 +33,7 @@ Each line of the data file is one example, in one of three shapes:
 {"text": "Plain text to continue."}
 ```
 
-Conversations use the model's own chat template, and only the assistant's replies are learned. Training matches Hugging Face PEFT step for step, so the usual LoRA settings carry over; without `--epochs`, small datasets get extra passes (up to 10) so the adapter has about 75 steps to learn from. With 20 or more examples, a tenth is held out: training prints the loss on them after every epoch and keeps the adapter from the epoch that did best. A run writes `runs/<data name>/` with:
+Conversations use the model's own chat template, and only the assistant's replies are learned. Training matches Hugging Face PEFT step for step, so the usual LoRA settings carry over; without `--epochs`, small datasets get extra passes (up to 10) so the adapter has about 75 steps to learn from. With 20 or more examples, a tenth is held out: training prints the loss on them after every epoch and keeps the adapter from the epoch that did best. If training stops early, `runs/<data name>/checkpoint/` holds the adapter from the last finished epoch. A run writes `runs/<data name>/` with:
 
 - `adapter_config.json` and `adapter_model.safetensors`: a PEFT adapter for Hugging Face, vLLM and friends,
 - `merged/`: the base model with the adapter folded in, in plain Hugging Face layout,
