@@ -8,7 +8,7 @@ ollama create my-data -f runs/my-data/Modelfile
 ollama run my-data
 ```
 
-> **Status:** early work in progress. Training, download and export work on real models. Models train in float32, so a 4 GB GPU fits about 0.5B parameters until QLoRA lands. Importing into Ollama has not been tested yet.
+> **Status:** early work in progress. Training, download and export work on real models. Models train in float32, so a 4 GB GPU fits about 0.5B parameters until QLoRA lands. Ollama 0.40 imports the merged model, but runs imported safetensors only on its MLX engine: Apple Silicon, or NVIDIA GPUs from the RTX 20 series on. GGUF export, which Ollama runs everywhere, is next.
 
 ## Why
 
