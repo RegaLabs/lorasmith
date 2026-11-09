@@ -5,8 +5,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use burn::store::{ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore};
-use burn::tensor::Device;
+use burn::store::{
+    FloatCastAdapter, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore,
+};
+use burn::tensor::{DType, Device};
 
 use crate::config::Config;
 use crate::model::Llama;
@@ -27,8 +29,9 @@ pub fn weights(model: &mut Llama, dir: &Path) -> Result<()> {
     let mut applied = BTreeSet::new();
     let mut missing = BTreeSet::new();
     for shard in shards(dir)? {
+        // Checkpoints usually ship in bf16, which WGSL GPUs can't compute in, so we train in f32.
         let mut store = SafetensorsStore::from_file(&shard)
-            .with_from_adapter(PyTorchToBurnAdapter)
+            .with_from_adapter(PyTorchToBurnAdapter.chain(FloatCastAdapter::to(DType::F32)))
             .with_key_remapping(r"^model\.", "")
             .allow_partial(true);
         let result = model
@@ -99,6 +102,28 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(logits(&original, &device), logits(&loaded, &device));
+    }
+
+    #[test]
+    fn bf16_checkpoints_load_as_f32() {
+        let device = Device::flex();
+        let config = tiny("llama");
+        let dir = std::env::temp_dir().join(format!("loraforge-bf16-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut store = SafetensorsStore::from_file(dir.join("model.safetensors"))
+            .with_to_adapter(BurnToPyTorchAdapter.chain(FloatCastAdapter::to(DType::BF16)))
+            .with_key_remapping(r"^(embed_tokens|layers|norm)", "model.$1");
+        Llama::new(&config, &device).save_into(&mut store).unwrap();
+
+        let mut loaded = Llama::new(&config, &device);
+        weights(&mut loaded, &dir).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(
+            loaded.layers[0].mlp.up_proj.weight.val().dtype(),
+            DType::F32
+        );
+        assert_eq!(loaded.embed_tokens.weight.val().dtype(), DType::F32);
     }
 
     #[test]
