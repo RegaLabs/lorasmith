@@ -8,7 +8,7 @@ ollama create my-data -f runs/my-data/Modelfile
 ollama run my-data
 ```
 
-> **Status:** early work in progress. Training, download and export work on real models. Models train in float32, so a 4 GB GPU fits about 0.5B parameters until QLoRA lands. Ollama 0.40 imports the merged model, but runs imported safetensors only on its MLX engine: Apple Silicon, or NVIDIA GPUs from the RTX 20 series on. GGUF export, which Ollama runs everywhere, is next.
+> **Status:** early work in progress. Training, download and export work on real models, and the result runs in Ollama. Models train in float32 for now: a 4 GB GPU handles SmolLM2-135M, while 0.5B models run out of memory and need `--cpu` until QLoRA lands.
 
 ## Why
 
@@ -37,7 +37,10 @@ Conversations use the model's own chat template, and only the assistant's replie
 
 - `adapter_config.json` and `adapter_model.safetensors`: a PEFT adapter for Hugging Face, vLLM and friends,
 - `merged/`: the base model with the adapter folded in, in plain Hugging Face layout,
-- `Modelfile`: points Ollama at `merged/`.
+- `model.gguf`: the same merged model in float16 for llama.cpp, Ollama and LM Studio,
+- `Modelfile`: points Ollama at `model.gguf`.
+
+GGUF export covers byte-level BPE tokenizers (Llama 3, Qwen, SmolLM). For Mistral the Modelfile points at `merged/`, which Ollama runs only on Apple Silicon and NVIDIA RTX 20 series or newer.
 
 ## Roadmap
 
@@ -45,7 +48,7 @@ Conversations use the model's own chat template, and only the assistant's replie
 2. ~~Llama-shaped model in Burn, loaded from HF safetensors~~
 3. ~~Dataset loading and chat templates~~
 4. ~~Training loop with LoRA~~
-5. ~~Export: PEFT adapter, merged model, Ollama `Modelfile`~~
+5. ~~Export: PEFT adapter, merged model, GGUF, Ollama `Modelfile`~~
 6. ~~Model download and short aliases~~
 7. QLoRA, half precision and memory checks
 8. Release binaries for Linux, macOS and Windows

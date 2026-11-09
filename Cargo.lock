@@ -4029,6 +4029,7 @@ dependencies = [
  "safetensors 0.8.0",
  "serde",
  "serde_json",
+ "sha2",
  "tokenizers",
 ]
 

@@ -24,13 +24,29 @@ const WEIGHTS: &[&str] = &[
     ".index.json",
 ];
 
-/// Writes the adapter, the merged model under `merged/`, and a `Modelfile` into `dir`.
+/// Writes the adapter, the merged model under `merged/`, `model.gguf` and a `Modelfile` into `dir`.
 /// `base` names the base model for the adapter config, `model_dir` holds its files.
-pub fn all(model: Llama, base: &str, model_dir: &Path, dir: &Path) -> Result<()> {
+/// Returns why no GGUF file was written, if one wasn't; the Modelfile then points at `merged/`.
+pub fn all(
+    model: Llama,
+    base: &str,
+    model_dir: &Path,
+    dir: &Path,
+) -> Result<Option<anyhow::Error>> {
     std::fs::create_dir_all(dir).with_context(|| format!("can't create {}", dir.display()))?;
     adapter(&model, base, dir)?;
     merged(model, model_dir, &dir.join("merged"))?;
-    std::fs::write(dir.join("Modelfile"), "FROM ./merged\n").context("can't write the Modelfile")
+    // Ollama runs GGUF on every machine, but runs a safetensors folder only where it has MLX.
+    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("model");
+    let gguf = crate::gguf::convert(&dir.join("merged"), name, &dir.join("model.gguf"));
+    let from = if gguf.is_ok() {
+        "./model.gguf"
+    } else {
+        "./merged"
+    };
+    std::fs::write(dir.join("Modelfile"), format!("FROM {from}\n"))
+        .context("can't write the Modelfile")?;
+    Ok(gguf.err())
 }
 
 /// Writes `adapter_config.json` and `adapter_model.safetensors` as HF PEFT does.
@@ -197,6 +213,19 @@ mod tests {
         let (_, reloaded) = crate::load::model(&dir, &device).unwrap();
         logits(&reloaded, &device).assert_approx_eq::<f32>(&expected, Tolerance::absolute(1e-4));
         assert!(dir.join("config.json").exists());
+    }
+
+    #[test]
+    fn modelfile_falls_back_to_the_merged_folder_without_gguf() {
+        let device = Device::flex().autodiff();
+        let dir = temp("all");
+        // The tiny fixture has no tokenizer, so no GGUF file can be written.
+        let skipped = all(trained(&device), "tiny-llama", Path::new(BASE), &dir).unwrap();
+        assert!(skipped.is_some());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Modelfile")).unwrap(),
+            "FROM ./merged\n"
+        );
     }
 
     #[test]

@@ -211,7 +211,7 @@ impl Rope {
     }
 }
 
-fn inverse_frequencies(config: &Config) -> Vec<f64> {
+pub(crate) fn inverse_frequencies(config: &Config) -> Vec<f64> {
     let dim = config.head_dim();
     let base: Vec<f64> = (0..dim / 2)
         .map(|i| 1.0 / config.rope_theta().powf(2.0 * i as f64 / dim as f64))

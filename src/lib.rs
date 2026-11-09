@@ -5,6 +5,7 @@ pub mod config;
 pub mod data;
 pub mod device;
 pub mod export;
+pub mod gguf;
 pub mod hub;
 pub mod load;
 pub mod model;

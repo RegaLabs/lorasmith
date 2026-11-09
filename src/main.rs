@@ -103,7 +103,12 @@ fn train(args: TrainArgs) -> Result<()> {
     );
 
     let out = args.out.unwrap_or_else(|| free_run_dir(&args.data));
-    export::all(trained, &model.id, &model.dir, &out)?;
+    if let Some(reason) = export::all(trained, &model.id, &model.dir, &out)? {
+        println!("\nNote    no GGUF file: {reason:#}");
+        println!(
+            "        Ollama can still run merged/ on Apple Silicon and NVIDIA RTX 20 series or newer."
+        );
+    }
     let name = out
         .file_name()
         .and_then(|n| n.to_str())

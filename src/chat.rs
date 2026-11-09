@@ -29,8 +29,7 @@ impl Template {
     /// Reads the template from `chat_template.jinja` or the model's tokenizer config.
     /// Returns `None` for base models that ship without one.
     pub fn load(model_dir: &Path, config: &Value) -> Result<Option<Self>> {
-        let separate = std::fs::read_to_string(model_dir.join("chat_template.jinja")).ok();
-        let Some(source) = separate.or_else(|| inline_template(&config["chat_template"])) else {
+        let Some(source) = template_source(model_dir, config) else {
             return Ok(None);
         };
         Self::new(
@@ -127,6 +126,12 @@ pub fn assistant_spans(text: &str, messages: &[Message], eos: &str) -> Result<Ve
         cursor = end;
     }
     Ok(spans)
+}
+
+/// The Jinja source of the chat template, from `chat_template.jinja` or the tokenizer config.
+pub fn template_source(model_dir: &Path, config: &Value) -> Option<String> {
+    let separate = std::fs::read_to_string(model_dir.join("chat_template.jinja")).ok();
+    separate.or_else(|| inline_template(&config["chat_template"]))
 }
 
 /// Old configs store a list of named templates; the one named "default" is for chat.
