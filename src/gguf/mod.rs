@@ -11,6 +11,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
+use burn::tensor::{DType, TensorData};
 
 const ALIGNMENT: usize = 32;
 
@@ -30,6 +31,9 @@ pub enum Value {
 pub enum Kind {
     F32,
     F16,
+    /// Blocks of 32 values: an f16 scale, then 32 signed bytes. Half the size of f16 and,
+    /// for chat, indistinguishable from it.
+    Q8_0,
 }
 
 impl Kind {
@@ -37,15 +41,50 @@ impl Kind {
         match self {
             Kind::F32 => 0,
             Kind::F16 => 1,
+            Kind::Q8_0 => 8,
         }
     }
 
-    fn size(self) -> usize {
+    fn bytes(self, values: usize) -> usize {
         match self {
-            Kind::F32 => 4,
-            Kind::F16 => 2,
+            Kind::F32 => values * 4,
+            Kind::F16 => values * 2,
+            Kind::Q8_0 => values / 32 * 34,
         }
     }
+}
+
+/// Stores `values` as `kind`, bit for bit as llama.cpp's own converter would.
+pub fn encode(kind: Kind, values: Vec<f32>) -> Vec<u8> {
+    let count = values.len();
+    match kind {
+        Kind::F32 => TensorData::new(values, [count]).as_bytes().to_vec(),
+        Kind::F16 => TensorData::new(values, [count])
+            .convert_dtype(DType::F16)
+            .as_bytes()
+            .to_vec(),
+        Kind::Q8_0 => q8_0(&values),
+    }
+}
+
+fn q8_0(values: &[f32]) -> Vec<u8> {
+    let scales: Vec<f32> = values
+        .chunks(32)
+        .map(|block| block.iter().fold(0f32, |max, v| max.max(v.abs())) / 127.0)
+        .collect();
+    let half_scales = TensorData::new(scales.clone(), [scales.len()]).convert_dtype(DType::F16);
+    let mut out = Vec::with_capacity(values.len() / 32 * 34);
+    for ((block, scale), half) in values
+        .chunks(32)
+        .zip(&scales)
+        .zip(half_scales.as_bytes().chunks(2))
+    {
+        out.extend_from_slice(half);
+        let inverse = if *scale == 0.0 { 0.0 } else { 1.0 / scale };
+        // Rust's round() rounds halves away from zero, like ggml's roundf.
+        out.extend(block.iter().map(|v| (v * inverse).round() as i8 as u8));
+    }
+    out
 }
 
 /// A tensor's name, its shape in Hugging Face order (outermost first) and how it is stored.
@@ -58,7 +97,7 @@ pub struct Info {
 
 impl Info {
     fn bytes(&self) -> usize {
-        self.shape.iter().product::<usize>() * self.kind.size()
+        self.kind.bytes(self.shape.iter().product())
     }
 }
 
@@ -192,6 +231,20 @@ fn value_len(value: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn q8_0_matches_ggml_blocks() {
+        let values: Vec<f32> = (0..32).map(|v| v as f32 - 8.0).collect();
+        let bytes = encode(Kind::Q8_0, values);
+        assert_eq!(bytes.len(), 34);
+        // Largest magnitude 23 maps to 127; 0.5-style halves round away from zero.
+        let scale = 23.0f32 / 127.0;
+        let half = TensorData::new(vec![scale], [1]).convert_dtype(DType::F16);
+        assert_eq!(&bytes[..2], half.as_bytes());
+        assert_eq!(bytes[2] as i8, (-8.0f32 / scale).round() as i8);
+        assert_eq!(bytes[33] as i8, 127);
+        assert_eq!(encode(Kind::Q8_0, vec![0.0; 32])[2..], [0u8; 32]);
+    }
 
     #[test]
     fn layout_matches_the_spec() {

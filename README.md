@@ -37,7 +37,7 @@ Conversations use the model's own chat template, and only the assistant's replie
 
 - `adapter_config.json` and `adapter_model.safetensors`: a PEFT adapter for Hugging Face, vLLM and friends,
 - `merged/`: the base model with the adapter folded in, in plain Hugging Face layout,
-- `model.gguf`: the same merged model in float16 for llama.cpp, Ollama and LM Studio,
+- `model.gguf`: the same merged model in Q8_0 (half the size of float16, near-identical output) for llama.cpp, Ollama and LM Studio,
 - `Modelfile`: points Ollama at `model.gguf`.
 
 GGUF export covers byte-level BPE tokenizers (Llama 3, Qwen, SmolLM). For Mistral the Modelfile points at `merged/`, which Ollama runs only on Apple Silicon and NVIDIA RTX 20 series or newer.

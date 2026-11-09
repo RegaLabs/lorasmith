@@ -4,13 +4,12 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use burn::tensor::{DType, TensorData};
 
 use super::shards::{self, Source};
 use super::{Info, Kind, Value, vocab};
 use crate::config::Config;
 
-/// Writes `model_dir` as a float16 GGUF file at `out`, calling the model `name`.
+/// Writes `model_dir` as a Q8_0 GGUF file at `out`, calling the model `name`.
 pub fn convert(model_dir: &Path, name: &str, out: &Path) -> Result<()> {
     let text =
         std::fs::read_to_string(model_dir.join("config.json")).context("can't read config.json")?;
@@ -31,10 +30,13 @@ pub fn convert(model_dir: &Path, name: &str, out: &Path) -> Result<()> {
         }
         let name = gguf_name(&hf_name)
             .with_context(|| format!("{hf_name} has no llama.cpp equivalent"))?;
-        let kind = if shape.len() >= 2 && name.ends_with(".weight") {
-            Kind::F16
-        } else {
-            Kind::F32
+        // Q8_0 needs whole 32-value blocks along each row.
+        let kind = match shape.last() {
+            Some(width) if shape.len() >= 2 && name.ends_with(".weight") && width % 32 == 0 => {
+                Kind::Q8_0
+            }
+            _ if shape.len() >= 2 && name.ends_with(".weight") => Kind::F16,
+            _ => Kind::F32,
         };
         tensors.push((Info { name, shape, kind }, source));
     }
@@ -56,13 +58,7 @@ pub fn convert(model_dir: &Path, name: &str, out: &Path) -> Result<()> {
         } else if arch == "llama" && info.name.contains("attn_k.") {
             values = permute(&values, info.shape[0], config.kv_heads());
         }
-        let data = TensorData::new(values, [info.shape.iter().product::<usize>()]);
-        let data = if info.kind == Kind::F16 {
-            data.convert_dtype(DType::F16)
-        } else {
-            data
-        };
-        Ok(data.as_bytes().to_vec())
+        Ok(super::encode(info.kind, values))
     })
 }
 
@@ -71,8 +67,9 @@ fn hyperparameters(config: &Config, arch: &str, name: &str) -> Vec<(String, Valu
     let mut keys = vec![
         ("general.architecture".to_string(), Value::Str(arch.into())),
         ("general.name".to_string(), Value::Str(name.into())),
-        // 1 is llama.cpp's "mostly F16": 2-D weights in f16, norms and biases in f32.
-        ("general.file_type".to_string(), Value::U32(1)),
+        // 7 is llama.cpp's "mostly Q8_0": 2-D weights in Q8_0, norms and biases in f32.
+        ("general.file_type".to_string(), Value::U32(7)),
+        ("general.quantization_version".to_string(), Value::U32(2)),
         (key("vocab_size"), Value::U32(config.vocab_size as u32)),
         (
             key("context_length"),
