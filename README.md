@@ -8,7 +8,7 @@ ollama create my-data -f runs/my-data/Modelfile
 ollama run my-data
 ```
 
-> **Status:** early work in progress. Training, download and export work on real models, and the result runs in Ollama. Models train in float32 for now: a 4 GB GPU trains models up to about 0.5B parameters (Qwen2.5-0.5B: 81 steps in about 3 minutes on a Quadro M2200). Bigger models need `--cpu` until half precision lands.
+> **Status:** early work in progress. Training, download and export work on real models, and the result runs in Ollama. Models train in float32 for now: a 4 GB GPU trains models up to about 0.5B parameters (Qwen2.5-0.5B: 81 steps in about 3 minutes on a Quadro M2200). Bigger models need `--cpu` until half precision lands, and loraforge says so before downloading them.
 
 ## Why
 

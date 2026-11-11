@@ -61,9 +61,19 @@ fn main() -> Result<()> {
 
 fn train(args: TrainArgs) -> Result<()> {
     let terminal = std::io::stdout().is_terminal();
+    let found = if args.cpu {
+        device::cpu()
+    } else {
+        device::best()
+    };
     let model = hub::fetch(&args.model, terminal, |config| {
-        let size = config.parameters() as f64;
-        println!("Model   {} ({:.2}B parameters)", args.model, size / 1e9);
+        let size = config.parameters();
+        println!(
+            "Model   {} ({:.2}B parameters)",
+            args.model,
+            size as f64 / 1e9
+        );
+        device::check_memory(&found, size)
     })?;
     let dataset = data::load(&args.data, &model.dir, args.max_len)?;
     let (examples, validation) = train::split(dataset.examples, Options::default().seed);
@@ -76,11 +86,6 @@ fn train(args: TrainArgs) -> Result<()> {
         validation.len()
     );
 
-    let found = if args.cpu {
-        device::cpu()
-    } else {
-        device::best()
-    };
     println!("Device  {}", found.name);
     let device = found.device.autodiff();
     let options = Options {

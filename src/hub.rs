@@ -43,11 +43,16 @@ pub struct Model {
 }
 
 /// Resolves `name` to a local folder, downloading config, tokenizer and weights if needed.
-/// The config is checked before any weights download, so unsupported models fail fast.
-pub fn fetch(name: &str, progress: bool, on_config: impl FnOnce(&Config)) -> Result<Model> {
+/// The config is read before any weights download, so unsupported models fail fast, and
+/// so does a model that `on_config` turns down, for example for being too big.
+pub fn fetch(
+    name: &str,
+    progress: bool,
+    on_config: impl FnOnce(&Config) -> Result<()>,
+) -> Result<Model> {
     if Path::new(name).is_dir() {
         let config = read_config(&Path::new(name).join("config.json"))?;
-        on_config(&config);
+        on_config(&config)?;
         return Ok(Model {
             id: name.to_string(),
             dir: PathBuf::from(name),
@@ -66,7 +71,7 @@ pub fn fetch(name: &str, progress: bool, on_config: impl FnOnce(&Config)) -> Res
     let repo = api.model(id.to_string());
     let files: Vec<String> = match repo.info() {
         Ok(info) => info.siblings.into_iter().map(|s| s.rfilename).collect(),
-        Err(error) => return cached(id, error),
+        Err(error) => return cached(id, error, on_config),
     };
     download(id, &repo, &files, on_config)
 }
@@ -90,7 +95,7 @@ fn download(
     id: &str,
     repo: &ApiRepo,
     files: &[String],
-    on_config: impl FnOnce(&Config),
+    on_config: impl FnOnce(&Config) -> Result<()>,
 ) -> Result<Model> {
     let get = |file: &str| {
         repo.get(file).with_context(|| {
@@ -99,7 +104,7 @@ fn download(
     };
     let config_path = get("config.json")?;
     let config = read_config(&config_path)?;
-    on_config(&config);
+    on_config(&config)?;
     for file in ["tokenizer.json", "tokenizer_config.json"] {
         if !files.iter().any(|f| f == file) {
             bail!(
@@ -126,7 +131,11 @@ fn download(
 }
 
 /// Lets training run offline when an earlier download is complete.
-fn cached(id: &str, error: hf_hub::api::sync::ApiError) -> Result<Model> {
+fn cached(
+    id: &str,
+    error: hf_hub::api::sync::ApiError,
+    on_config: impl FnOnce(&Config) -> Result<()>,
+) -> Result<Model> {
     let Some(config_path) = Cache::from_env().model(id.to_string()).get("config.json") else {
         bail!(
             "can't reach {id} on Hugging Face ({error}).\n\
@@ -134,9 +143,11 @@ fn cached(id: &str, error: hf_hub::api::sync::ApiError) -> Result<Model> {
              need you to accept their license there and set HF_TOKEN"
         );
     };
+    let config = read_config(&config_path)?;
+    on_config(&config)?;
     Ok(Model {
         id: id.to_string(),
-        config: read_config(&config_path)?,
+        config,
         dir: config_path
             .parent()
             .expect("cached files live in a folder")
@@ -197,14 +208,20 @@ mod tests {
 
     #[test]
     fn local_folders_are_used_as_they_are() {
-        let model = fetch("tests/fixtures/qwen3", false, |_| ()).unwrap();
+        let model = fetch("tests/fixtures/qwen3", false, |_| Ok(())).unwrap();
         assert_eq!(model.config.model_type, "qwen3");
+    }
+
+    #[test]
+    fn a_model_the_caller_turns_down_is_not_fetched() {
+        let error = fetch("tests/fixtures/qwen3", false, |_| bail!("too big")).err();
+        assert_eq!(error.map(|e| e.to_string()), Some("too big".to_string()));
     }
 
     #[test]
     #[ignore = "downloads about 270 MB"]
     fn downloads_a_small_model() {
-        let model = fetch("smollm2:135m", false, |_| ()).unwrap();
+        let model = fetch("smollm2:135m", false, |_| Ok(())).unwrap();
         assert!(model.dir.join("model.safetensors").exists());
         assert!(model.dir.join("tokenizer.json").exists());
     }

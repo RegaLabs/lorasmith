@@ -57,6 +57,43 @@ pub fn cpu() -> Found {
     }
 }
 
+/// Fails with advice when a model with `parameters` weights can't train on `found`, so
+/// nobody downloads gigabytes to find out.
+///
+/// wgpu doesn't say how much memory a GPU has, so this briefly holds a quarter more than
+/// the f32 weights take. Training needs more than that, so only models with no chance are
+/// turned down; the rest can still run out later. The CPU isn't probed: running out of
+/// system RAM ends the process instead of panicking.
+pub fn check_memory(found: &Found, parameters: usize) -> Result<()> {
+    if found.device == Device::flex() {
+        return Ok(());
+    }
+    // 4 MB of f32 each. Burn's pool sizes its pages after the largest allocation it has
+    // seen, so bigger chunks cost the training that follows up to 260 MB of GPU memory.
+    const CHUNK: usize = 1 << 20;
+    let needed = parameters + parameters / 4;
+    let probe = guard(|| {
+        let held: Vec<Tensor<1>> = (0..needed.div_ceil(CHUNK))
+            .map(|_| Tensor::empty([CHUNK], &found.device))
+            .collect();
+        // A failed allocation only shows once something is read back from the GPU.
+        if let Some(last) = held.last() {
+            last.clone().slice(0..1).into_scalar::<f32>();
+        }
+    });
+    // The chunks are released lazily, and a cleanup that comes before that keeps some.
+    found.device.sync().ok();
+    found.device.memory_cleanup();
+    probe.map_err(|_| {
+        anyhow!(
+            "{} doesn't have the {:.1} GB of memory this model needs. Try a smaller model \
+             such as qwen2.5:0.5b, or --cpu to use system RAM instead",
+            found.name,
+            needed as f64 * 4.0 / 1e9
+        )
+    })
+}
+
 /// Runs `f`, turning a panic inside it into an error that says what to try.
 /// wgpu reports running out of memory and driver faults by panicking, often on a worker
 /// thread, which would otherwise end the program with a raw message and a backtrace hint.
@@ -112,6 +149,11 @@ mod tests {
         let cpu = list().pop().expect("list is never empty");
         assert_eq!(cpu.name, "CPU");
         assert!(works(&cpu.device));
+    }
+
+    #[test]
+    fn the_cpu_is_never_probed_for_memory() {
+        assert!(check_memory(&cpu(), usize::MAX / 8).is_ok());
     }
 
     #[test]
