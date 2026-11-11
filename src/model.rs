@@ -6,7 +6,7 @@ use burn::module::Module;
 use burn::nn::{Embedding, EmbeddingConfig, Linear, LinearConfig, RmsNorm, RmsNormConfig};
 use burn::tensor::module::{attention, linear};
 use burn::tensor::ops::AttentionModuleOptions;
-use burn::tensor::{Device, Int, Tensor, TensorData, activation};
+use burn::tensor::{DType, Device, FloatDType, Int, Tensor, TensorData, activation};
 
 use crate::config::Config;
 use crate::lora;
@@ -123,6 +123,11 @@ impl Llama {
             None => linear(x, self.embed_tokens.weight.val().transpose(), None),
         }
     }
+
+    /// Whether the weights are held in f16, which training and merging must allow for.
+    pub fn is_half(&self) -> bool {
+        self.embed_tokens.weight.val().dtype() == DType::F16
+    }
 }
 
 impl Block {
@@ -213,8 +218,10 @@ impl Rope {
 
     fn apply(&self, x: Tensor<4>) -> Tensor<4> {
         let [_, _, seq, dim] = x.dims();
-        let cos = self.cos.clone().narrow(0, 0, seq).unsqueeze::<4>();
-        let sin = self.sin.clone().narrow(0, 0, seq).unsqueeze::<4>();
+        // The tables are f32, and multiplying doesn't convert them to a half-precision `x`.
+        let dtype = FloatDType::from(x.dtype());
+        let table = |t: &Tensor<2>| t.clone().narrow(0, 0, seq).cast(dtype).unsqueeze::<4>();
+        let (cos, sin) = (table(&self.cos), table(&self.sin));
         let first = x.clone().narrow(3, 0, dim / 2);
         let second = x.clone().narrow(3, dim / 2, dim / 2);
         let rotated = Tensor::cat(vec![second.neg(), first], 3);

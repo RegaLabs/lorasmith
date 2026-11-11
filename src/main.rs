@@ -2,7 +2,8 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use burn::tensor::FloatDType;
 use clap::{Parser, Subcommand};
 use loraforge::train::{Options, Progress};
 use loraforge::{data, device, export, hub, load, train};
@@ -86,7 +87,12 @@ fn train(args: TrainArgs) -> Result<()> {
         validation.len()
     );
 
-    println!("Device  {}", found.name);
+    let half = found.dtype == FloatDType::F16;
+    println!(
+        "Device  {}{}",
+        found.name,
+        if half { ", in half precision" } else { "" }
+    );
     let device = found.device.autodiff();
     let options = Options {
         rank: args.rank,
@@ -108,8 +114,9 @@ fn train(args: TrainArgs) -> Result<()> {
     let start = Instant::now();
     let mut after_first = None;
     let mut scores = Vec::new();
+    let mut last_loss = 0.0;
     let trained = device::guard(|| -> Result<_> {
-        let (_, base) = load::model(&model.dir, &device)?;
+        let (_, base) = load::model(&model.dir, &device, found.dtype)?;
         let base = train::attach(base, &options);
         Ok(train::train(
             base,
@@ -121,6 +128,7 @@ fn train(args: TrainArgs) -> Result<()> {
                 // The first step compiles GPU kernels, so it says little about the rest.
                 let first = *after_first.get_or_insert_with(Instant::now);
                 report(&p, first.elapsed(), terminal);
+                last_loss = p.loss;
                 scores.extend(p.validation);
                 if p.epoch_done
                     && let Err(error) = export::adapter(p.model, &model.id, &checkpoint)
@@ -133,6 +141,17 @@ fn train(args: TrainArgs) -> Result<()> {
     .and_then(|trained| trained)
     // A progress line may still be open on the terminal.
     .inspect_err(|_| println!())?;
+    if !last_loss.is_finite() {
+        bail!(
+            "the loss stopped being a number, so this model would only write nonsense. \
+             Try a lower --learning-rate{}",
+            if half {
+                ", or --cpu to train in full precision"
+            } else {
+                ""
+            }
+        );
+    }
 
     let best = (0..scores.len()).min_by(|&a, &b| scores[a].total_cmp(&scores[b]));
     if let Some(best) = best.filter(|&best| best + 1 < scores.len()) {

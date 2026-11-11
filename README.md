@@ -8,7 +8,7 @@ ollama create my-data -f runs/my-data/Modelfile
 ollama run my-data
 ```
 
-> **Status:** early work in progress. Training, download and export work on real models, and the result runs in Ollama. Models train in float32 for now: a 4 GB GPU trains models up to about 0.5B parameters (Qwen2.5-0.5B: 81 steps in about 3 minutes on a Quadro M2200). Bigger models need `--cpu` until half precision lands, and loraforge says so before downloading them.
+> **Status:** early work in progress. Training, download and export work on real models, and the result runs in Ollama. GPUs that compute in float16 train in half precision, which takes about a third less memory (Qwen2.5-0.5B: 2.2 GB instead of 3.2 GB on an Intel HD 630) for the same losses. Other GPUs, such as older NVIDIA cards under Vulkan, and the CPU train in float32: there a 4 GB GPU trains models up to about 0.5B parameters (Qwen2.5-0.5B: 81 steps in about 3 minutes on a Quadro M2200). A model too big for the GPU needs `--cpu`, and loraforge says so before downloading it.
 
 ## Why
 
@@ -50,7 +50,7 @@ GGUF export covers byte-level BPE tokenizers (Llama 3, Qwen, SmolLM). For Mistra
 4. ~~Training loop with LoRA~~
 5. ~~Export: PEFT adapter, merged model, GGUF, Ollama `Modelfile`~~
 6. ~~Model download and short aliases~~
-7. QLoRA, half precision and memory checks
+7. QLoRA, ~~half precision~~ and ~~memory checks~~
 8. Release binaries for Linux, macOS and Windows
 
 ## Contributing

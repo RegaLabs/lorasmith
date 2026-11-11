@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use burn::tensor::{Device, Tensor, TensorData, Tolerance};
+use burn::tensor::{Device, FloatDType, Tensor, TensorData, Tolerance};
 use loraforge::data::Example;
 use loraforge::{load, lora, train};
 use serde_json::Value;
@@ -55,7 +55,8 @@ fn training_matches_peft_step_for_step() {
     let number = |key: &str| expected[key].as_f64().unwrap();
 
     let device = Device::flex().autodiff();
-    let (_, model) = load::model(Path::new("tests/fixtures/llama"), &device).unwrap();
+    let (_, model) =
+        load::model(Path::new("tests/fixtures/llama"), &device, FloatDType::F32).unwrap();
     let model = lora::attach(
         model,
         expected["rank"].as_u64().unwrap() as usize,
@@ -74,6 +75,7 @@ fn training_matches_peft_step_for_step() {
             &batch,
             number("learning_rate"),
             number("max_grad_norm"),
+            &mut 1.0,
             &device,
         );
         let want = want.as_f64().unwrap() as f32;

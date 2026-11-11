@@ -7,7 +7,7 @@ use burn::module::{Lora, Module, ModuleMapper, Param, ParamGroup, ParamId};
 use burn::nn::Linear;
 use burn::optim::GradientsParams;
 use burn::tensor::module::linear;
-use burn::tensor::{Device, Distribution, Tensor, TensorData};
+use burn::tensor::{Device, Distribution, FloatDType, Tensor, TensorData};
 
 use crate::model::Llama;
 
@@ -19,7 +19,12 @@ const TARGETS: &str = r"\.(q|k|v|o|gate|up|down)_proj\.weight$";
 /// B is zero, so the output doesn't change until training starts.
 pub fn attach(model: Llama, rank: usize, alpha: f64) -> Llama {
     let targets = ParamGroup::from_regex(TARGETS).expect("TARGETS is a valid regex");
-    let model = model.apply_lora(Lora::new(rank, alpha).set_param_group(targets));
+    // The adapters stay in f32 over a half-precision base: one optimizer step changes them
+    // by less than f16 can tell apart.
+    let lora = Lora::new(rank, alpha)
+        .set_param_group(targets)
+        .set_dtype(FloatDType::F32);
+    let model = model.apply_lora(lora);
     // Burn draws A from Normal(0, 1/rank), which for a 576-wide layer is 2.6 times PEFT's
     // spread and makes the same learning rate act that much stronger.
     set_factors(model, |path, shape| {
@@ -85,10 +90,12 @@ pub fn forward(layer: &Linear, x: Tensor<3>) -> Tensor<3> {
     let Some(lora) = layer.weight.adapter() else {
         return layer.forward(x);
     };
+    let dtype = FloatDType::from(x.dtype());
     let bias = layer.bias.as_ref().map(|b| b.val());
     let base = linear(x.clone(), layer.weight.base(), bias);
+    let x = x.cast(FloatDType::F32);
     let low_rank = linear(linear(x, lora.a.val(), None), lora.b.val(), None);
-    base + low_rank.mul_scalar(lora.scale)
+    base + low_rank.mul_scalar(lora.scale).cast(dtype)
 }
 
 /// The current adapter factors by path, in the form [`set_factors`] takes them back.
@@ -128,7 +135,15 @@ pub fn projections(model: &Llama) -> Vec<(String, &Linear)> {
 /// Scales all adapter gradients together so their combined norm is at most `max_norm`,
 /// like `torch.nn.utils.clip_grad_norm_`. Burn's own clipping limits each tensor separately,
 /// which lets hundreds of adapter tensors through at many times the intended norm.
-pub fn clip_grad_norm(model: &Llama, mut grads: GradientsParams, max_norm: f64) -> GradientsParams {
+///
+/// `loss_scale` is what the loss was multiplied by before backpropagation, which is divided
+/// out again here. Returns `None` when the gradients aren't finite and must not be applied.
+pub fn clip_grad_norm(
+    model: &Llama,
+    mut grads: GradientsParams,
+    loss_scale: f64,
+    max_norm: f64,
+) -> Option<GradientsParams> {
     let ids: Vec<ParamId> = projections(model)
         .iter()
         .filter_map(|(_, linear)| linear.weight.adapter())
@@ -140,16 +155,34 @@ pub fn clip_grad_norm(model: &Llama, mut grads: GradientsParams, max_norm: f64) 
         .map(|grad| grad.powi_scalar(2).sum())
         .collect();
     if squares.is_empty() {
-        return grads;
+        return Some(grads);
     }
-    let norm = Tensor::cat(squares, 0).sum().sqrt().into_scalar::<f32>() as f64;
-    let scale = (max_norm / (norm + 1e-6)).min(1.0);
+    let norm = Tensor::cat(squares, 0).sum().sqrt().into_scalar::<f32>() as f64 / loss_scale;
+    if !norm.is_finite() {
+        return None;
+    }
+    let scale = (max_norm / (norm + 1e-6)).min(1.0) / loss_scale;
     for id in ids {
         if let Some(grad) = grads.remove::<2>(id) {
             grads.register(id, grad.mul_scalar(scale));
         }
     }
-    grads
+    Some(grads)
+}
+
+/// Moves the adapters of `trained` onto `base`, another copy of the same model without any.
+pub fn transplant(trained: &Llama, base: Llama) -> Llama {
+    let adapters = projections(trained);
+    let Some(lora) = adapters
+        .iter()
+        .find_map(|(_, layer)| layer.weight.adapter())
+    else {
+        return base;
+    };
+    let rank = lora.a.dims()[1];
+    let base = attach(base, rank, lora.scale * rank as f64);
+    let factors = factors(trained);
+    set_factors(base, |path, _| factors.get(path).cloned())
 }
 
 #[cfg(test)]

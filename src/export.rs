@@ -9,7 +9,7 @@ use burn::module::Module;
 use burn::store::{
     BurnToPyTorchAdapter, FloatCastAdapter, ModuleAdapter, ModuleSnapshot, SafetensorsStore,
 };
-use burn::tensor::{DType, Device, Tensor, TensorData};
+use burn::tensor::{DType, Device, FloatDType, Tensor, TensorData};
 use safetensors::{Dtype, tensor::TensorView};
 use serde_json::json;
 
@@ -112,6 +112,15 @@ pub fn merged(model: Llama, model_dir: &Path, dir: &Path) -> Result<()> {
         }
     }
 
+    // Half precision rounded the base weights. The published ones still have every digit,
+    // so the adapters are folded into a fresh copy of those instead.
+    let model = if model.is_half() {
+        let (_, base) = crate::load::model(model_dir, &Device::flex(), FloatDType::F32)?;
+        crate::lora::transplant(&model, base)
+    } else {
+        model
+    };
+
     // transformers refuses safetensors files whose "format" metadata isn't "pt".
     let to_hf = BurnToPyTorchAdapter.chain(FloatCastAdapter::to(published_dtype(model_dir)));
     let mut store = SafetensorsStore::from_file(dir.join("model.safetensors"))
@@ -126,7 +135,7 @@ pub fn merged(model: Llama, model_dir: &Path, dir: &Path) -> Result<()> {
         .with_context(|| format!("can't write the merged model to {}", dir.display()))
 }
 
-/// The precision the base model was published in. Training runs in f32, but writing the
+/// The precision the base model was published in. Merging runs in f32, but writing the
 /// merged model that way would make it twice the size of the original for no gain.
 fn published_dtype(model_dir: &Path) -> DType {
     let config: serde_json::Value = std::fs::read_to_string(model_dir.join("config.json"))
@@ -175,7 +184,7 @@ mod tests {
     const BASE: &str = "tests/fixtures/llama";
 
     fn trained(device: &Device) -> Llama {
-        let (_, model) = crate::load::model(Path::new(BASE), device).unwrap();
+        let (_, model) = crate::load::model(Path::new(BASE), device, FloatDType::F32).unwrap();
         let model = train::attach(model, &Options::default());
         let example = Example {
             tokens: vec![3, 1, 4, 1, 5, 9, 2, 6],
@@ -210,7 +219,7 @@ mod tests {
         let dir = temp("merged");
         merged(model, Path::new(BASE), &dir).unwrap();
 
-        let (_, reloaded) = crate::load::model(&dir, &device).unwrap();
+        let (_, reloaded) = crate::load::model(&dir, &device, FloatDType::F32).unwrap();
         logits(&reloaded, &device).assert_approx_eq::<f32>(&expected, Tolerance::absolute(1e-4));
         assert!(dir.join("config.json").exists());
     }

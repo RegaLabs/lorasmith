@@ -4,12 +4,15 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
-use burn::tensor::{Device, DeviceKind, DeviceType, Distribution, Tensor};
+use burn::tensor::{Device, DeviceKind, DeviceType, Distribution, FloatDType, Tensor};
 
 /// A device with a name a person recognizes.
 pub struct Found {
     pub name: String,
     pub device: Device,
+    /// The precision models train in on it: f16 where the device computes in it, which
+    /// halves the memory the weights take.
+    pub dtype: FloatDType,
 }
 
 /// Every device worth training on, GPUs first and the CPU last.
@@ -43,17 +46,24 @@ fn gpu(device: Device) -> Option<Found> {
     let identity = quietly(|| device.identity()).flatten()?;
     // Software rasterizers like llvmpipe pose as GPUs but lose badly to the CPU backend.
     identity.physical.as_ref()?;
+    let half = quietly(|| device.supports_dtype(FloatDType::F16)).unwrap_or(false);
     Some(Found {
         name: identity.name,
+        dtype: if half {
+            FloatDType::F16
+        } else {
+            FloatDType::F32
+        },
         device,
     })
 }
 
-/// The CPU, which always works.
+/// The CPU, which always works. It trains in f32: it can compute in f16, but at half the speed.
 pub fn cpu() -> Found {
     Found {
         name: "CPU".to_string(),
         device: Device::flex(),
+        dtype: FloatDType::F32,
     }
 }
 
@@ -61,20 +71,21 @@ pub fn cpu() -> Found {
 /// nobody downloads gigabytes to find out.
 ///
 /// wgpu doesn't say how much memory a GPU has, so this briefly holds a quarter more than
-/// the f32 weights take. Training needs more than that, so only models with no chance are
+/// the weights take. Training needs more than that, so only models with no chance are
 /// turned down; the rest can still run out later. The CPU isn't probed: running out of
 /// system RAM ends the process instead of panicking.
 pub fn check_memory(found: &Found, parameters: usize) -> Result<()> {
     if found.device == Device::flex() {
         return Ok(());
     }
-    // 4 MB of f32 each. Burn's pool sizes its pages after the largest allocation it has
-    // seen, so bigger chunks cost the training that follows up to 260 MB of GPU memory.
-    const CHUNK: usize = 1 << 20;
-    let needed = parameters + parameters / 4;
+    // 4 MB each. Burn's pool sizes its pages after the largest allocation it has seen,
+    // so bigger chunks cost the training that follows up to 260 MB of GPU memory.
+    const CHUNK: usize = 4 << 20;
+    let bytes_per_weight = if found.dtype == FloatDType::F16 { 2 } else { 4 };
+    let needed = (parameters + parameters / 4) * bytes_per_weight;
     let probe = guard(|| {
         let held: Vec<Tensor<1>> = (0..needed.div_ceil(CHUNK))
-            .map(|_| Tensor::empty([CHUNK], &found.device))
+            .map(|_| Tensor::empty([CHUNK / size_of::<f32>()], &found.device))
             .collect();
         // A failed allocation only shows once something is read back from the GPU.
         if let Some(last) = held.last() {
@@ -89,7 +100,7 @@ pub fn check_memory(found: &Found, parameters: usize) -> Result<()> {
             "{} doesn't have the {:.1} GB of memory this model needs. Try a smaller model \
              such as qwen2.5:0.5b, or --cpu to use system RAM instead",
             found.name,
-            needed as f64 * 4.0 / 1e9
+            needed as f64 / 1e9
         )
     })
 }

@@ -8,30 +8,32 @@ use anyhow::{Context, Result, bail};
 use burn::store::{
     FloatCastAdapter, ModuleAdapter, ModuleSnapshot, PyTorchToBurnAdapter, SafetensorsStore,
 };
-use burn::tensor::{DType, Device};
+use burn::tensor::{Device, FloatDType};
 
 use crate::config::Config;
 use crate::model::Llama;
 
-/// Reads `config.json` and every `*.safetensors` shard in `dir` into a ready model.
-pub fn model(dir: &Path, device: &Device) -> Result<(Config, Llama)> {
+/// Reads `config.json` and every `*.safetensors` shard in `dir` into a ready model whose
+/// weights are stored, and so computed with, as `dtype`.
+pub fn model(dir: &Path, device: &Device, dtype: FloatDType) -> Result<(Config, Llama)> {
     let path = dir.join("config.json");
     let json =
         fs::read_to_string(&path).with_context(|| format!("can't read {}", path.display()))?;
     let config = Config::parse(&json).with_context(|| format!("in {}", path.display()))?;
     let mut model = Llama::new(&config, device);
-    weights(&mut model, dir)?;
+    weights(&mut model, dir, dtype)?;
     Ok((config, model))
 }
 
-/// Fills `model` with the weights in `dir`. Fails if any weight is missing from every shard.
-pub fn weights(model: &mut Llama, dir: &Path) -> Result<()> {
+/// Fills `model` with the weights in `dir`, cast to `dtype`. Fails if any weight is missing
+/// from every shard.
+pub fn weights(model: &mut Llama, dir: &Path, dtype: FloatDType) -> Result<()> {
     let mut applied = BTreeSet::new();
     let mut missing = BTreeSet::new();
     for shard in shards(dir)? {
-        // Checkpoints usually ship in bf16, which WGSL GPUs can't compute in, so we train in f32.
+        // Checkpoints usually ship in bf16, which WGSL GPUs can't compute in.
         let mut store = SafetensorsStore::from_file(&shard)
-            .with_from_adapter(PyTorchToBurnAdapter.chain(FloatCastAdapter::to(DType::F32)))
+            .with_from_adapter(PyTorchToBurnAdapter.chain(FloatCastAdapter::to(dtype.into())))
             .with_key_remapping(r"^model\.", "")
             .allow_partial(true);
         let result = model
@@ -73,7 +75,7 @@ mod tests {
     use super::*;
     use crate::config::tiny;
     use burn::store::BurnToPyTorchAdapter;
-    use burn::tensor::{Int, Tensor, TensorData};
+    use burn::tensor::{DType, Int, Tensor, TensorData};
 
     fn logits(model: &Llama, device: &Device) -> Vec<f32> {
         let tokens =
@@ -98,14 +100,14 @@ mod tests {
         original.save_into(&mut store).unwrap();
 
         let mut loaded = Llama::new(&config, &device);
-        weights(&mut loaded, &dir).unwrap();
+        weights(&mut loaded, &dir, FloatDType::F32).unwrap();
         fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(logits(&original, &device), logits(&loaded, &device));
     }
 
     #[test]
-    fn bf16_checkpoints_load_as_f32() {
+    fn bf16_checkpoints_load_in_the_precision_asked_for() {
         let device = Device::flex();
         let config = tiny("llama");
         let dir = std::env::temp_dir().join(format!("loraforge-bf16-{}", std::process::id()));
@@ -115,22 +117,23 @@ mod tests {
             .with_key_remapping(r"^(embed_tokens|layers|norm)", "model.$1");
         Llama::new(&config, &device).save_into(&mut store).unwrap();
 
-        let mut loaded = Llama::new(&config, &device);
-        weights(&mut loaded, &dir).unwrap();
+        for dtype in [FloatDType::F32, FloatDType::F16] {
+            let mut loaded = Llama::new(&config, &device);
+            weights(&mut loaded, &dir, dtype).unwrap();
+            let up_proj = loaded.layers[0].mlp.up_proj.weight.val();
+            assert_eq!(up_proj.dtype(), DType::from(dtype));
+            assert_eq!(loaded.embed_tokens.weight.val().dtype(), DType::from(dtype));
+            assert_eq!(loaded.is_half(), dtype == FloatDType::F16);
+        }
         fs::remove_dir_all(&dir).unwrap();
-
-        assert_eq!(
-            loaded.layers[0].mlp.up_proj.weight.val().dtype(),
-            DType::F32
-        );
-        assert_eq!(loaded.embed_tokens.weight.val().dtype(), DType::F32);
     }
 
     #[test]
     fn refuses_a_folder_without_weights() {
         let dir = std::env::temp_dir().join(format!("loraforge-empty-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let error = weights(&mut Llama::new(&tiny("llama"), &Device::flex()), &dir).unwrap_err();
+        let mut model = Llama::new(&tiny("llama"), &Device::flex());
+        let error = weights(&mut model, &dir, FloatDType::F32).unwrap_err();
         fs::remove_dir_all(&dir).unwrap();
         assert!(error.to_string().contains("no .safetensors"));
     }

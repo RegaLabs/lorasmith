@@ -100,6 +100,11 @@ pub fn epochs_for(examples: usize, batch_size: usize) -> usize {
     TARGET_STEPS.div_ceil(steps_per_epoch).clamp(3, 10)
 }
 
+/// What the loss of a half-precision model is first multiplied by, see [`step`]. From 256
+/// to 1024, gradients on an Intel GPU match full precision to a thousandth. At 16 the
+/// smallest are still lost, and at 65536 Qwen2.5-0.5B's no longer fit.
+const HALF_LOSS_SCALE: f64 = 1024.0;
+
 /// Freezes `model` and attaches fresh adapters. The output doesn't change until training starts.
 pub fn attach(model: Llama, options: &Options) -> Llama {
     Device::flex().seed(options.seed);
@@ -127,6 +132,11 @@ pub fn train(
     mut report: impl FnMut(Progress<'_>),
 ) -> Llama {
     let mut optimizer = optimizer();
+    let mut loss_scale = if model.is_half() {
+        HALF_LOSS_SCALE
+    } else {
+        1.0
+    };
     let per_epoch = examples.len().div_ceil(options.batch_size);
     let total = per_epoch * options.epochs;
     let mut step = 0;
@@ -143,6 +153,7 @@ pub fn train(
                 &batch,
                 lr,
                 options.max_grad_norm,
+                &mut loss_scale,
                 device,
             );
             step += 1;
@@ -172,19 +183,30 @@ pub fn train(
 }
 
 /// One optimizer step on one batch. Returns the updated model and the batch's loss before the step.
+///
+/// The loss is multiplied by `loss_scale` on the way back through the model, because small
+/// gradients vanish in half precision on a GPU: unscaled, SmolLM2's arrive at a third of
+/// their size. When scaling makes one too big for half precision instead, the step is
+/// skipped and `loss_scale` halved for the next one. Full precision needs none: pass 1.
 pub fn step(
     model: Llama,
     optimizer: &mut ModuleOptimizer,
     batch: &[&Example],
     learning_rate: f64,
     max_grad_norm: f64,
+    loss_scale: &mut f64,
     device: &Device,
 ) -> (Llama, f32) {
     let loss = batch::loss(&model, batch::tensors(batch, device));
     let value: f32 = loss.clone().into_scalar();
-    let grads = GradientsParams::from_grads(loss.backward(), &model);
-    let grads = lora::clip_grad_norm(&model, grads, max_grad_norm);
-    (optimizer.step(learning_rate, model, grads), value)
+    let grads = GradientsParams::from_grads(loss.mul_scalar(*loss_scale).backward(), &model);
+    match lora::clip_grad_norm(&model, grads, *loss_scale, max_grad_norm) {
+        Some(grads) => (optimizer.step(learning_rate, model, grads), value),
+        None => {
+            *loss_scale = (*loss_scale / 2.0).max(1.0);
+            (model, value)
+        }
+    }
 }
 
 /// Indices `0..len` in a random order that depends only on `seed` (splitmix64 + Fisher-Yates).

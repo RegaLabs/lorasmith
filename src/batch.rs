@@ -1,6 +1,6 @@
 //! Turning examples into tensors, and the loss training minimizes.
 
-use burn::tensor::{Device, Int, Tensor, TensorData, activation};
+use burn::tensor::{Device, FloatDType, Int, Tensor, TensorData, activation};
 
 use crate::data::Example;
 use crate::model::Llama;
@@ -44,7 +44,10 @@ pub fn loss(model: &Llama, batch: Batch) -> Tensor<1> {
     let picked = hidden
         .reshape([rows * len, width])
         .select(0, batch.positions);
-    let log_probs = activation::log_softmax(model.logits(picked), 1);
+    // Half-precision logits are too coarse for the loss: exp overflows and small
+    // probabilities round to zero.
+    let logits = model.logits(picked).cast(FloatDType::F32);
+    let log_probs = activation::log_softmax(logits, 1);
     let chosen: Tensor<2> = log_probs.gather(1, batch.targets.unsqueeze_dim(1));
     chosen.mean().neg()
 }
