@@ -23,12 +23,16 @@ Training a LoRA adapter today means PyTorch, CUDA versions that have to line up,
 With [Rust](https://rustup.rs) 1.95 or newer:
 
 ```bash
+cargo install --locked lorasmith
+```
+
+That is the release on [crates.io](https://crates.io/crates/lorasmith). It has one gap for now: a crate there can't depend on a git commit, so it is built on the latest Burn pre-release, where `--qlora` trains but saves little or no GPU memory. To get `--qlora` in full, install from this repository instead:
+
+```bash
 cargo install --locked --git https://github.com/RegaLabs/lorasmith
 ```
 
-From a checkout, `cargo install --locked --path .` does the same. The first build compiles Burn and takes several minutes.
-
-`cargo install --locked lorasmith` gets the release on crates.io, with one difference for now: a crate there can't depend on a git commit, so it is built on the latest Burn pre-release, where `--qlora` trains but saves little or no GPU memory. That ends when Burn 0.23 is released with the two fixes it needs ([tracel-ai/burn#6465](https://github.com/tracel-ai/burn/pull/6465) and [#6503](https://github.com/tracel-ai/burn/pull/6503)). Until then `Cargo.toml` pins the Burn commit that has both.
+From a checkout, `cargo install --locked --path .` does the same. The gap closes when Burn 0.23 is released with the two fixes it needs ([tracel-ai/burn#6465](https://github.com/tracel-ai/burn/pull/6465) and [#6503](https://github.com/tracel-ai/burn/pull/6503)); until then `Cargo.toml` pins the Burn commit that has both. Either way the first build compiles Burn and takes several minutes.
 
 Every version tag also gets archives for Linux (x86_64, glibc 2.35 or newer), macOS (Apple Silicon and Intel) and Windows (x86_64), each holding the one `lorasmith` binary to unpack and put on your `PATH`. None is published yet.
 
