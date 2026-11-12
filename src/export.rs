@@ -112,9 +112,9 @@ pub fn merged(model: Llama, model_dir: &Path, dir: &Path) -> Result<()> {
         }
     }
 
-    // Half precision rounded the base weights. The published ones still have every digit,
-    // so the adapters are folded into a fresh copy of those instead.
-    let model = if model.is_half() {
+    // Half precision and 4-bit packing round the base weights. The published ones still have
+    // every digit, so the adapters are folded into a fresh copy of those instead.
+    let model = if model.is_half() || crate::qlora::is_packed(&model) {
         let (_, base) = crate::load::model(model_dir, &Device::flex(), FloatDType::F32)?;
         crate::lora::transplant(&model, base)
     } else {

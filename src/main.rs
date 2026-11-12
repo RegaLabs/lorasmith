@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use burn::tensor::FloatDType;
 use clap::{Parser, Subcommand};
 use loraforge::train::{Options, Progress};
-use loraforge::{data, device, export, hub, load, schedule, train};
+use loraforge::{data, device, export, hub, load, qlora, schedule, train};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -48,6 +48,10 @@ struct TrainArgs {
     /// Train on the CPU even when a GPU works.
     #[arg(long)]
     cpu: bool,
+    /// Hold the model in 4 bits while training. Needs far less memory, at a small cost in
+    /// exactness; the merged model is still built on the full weights.
+    #[arg(long)]
+    qlora: bool,
 }
 
 fn main() -> Result<()> {
@@ -74,7 +78,12 @@ fn train(args: TrainArgs) -> Result<()> {
             args.model,
             size as f64 / 1e9
         );
-        device::check_memory(&found, size)
+        let packed = if args.qlora {
+            config.projection_parameters()
+        } else {
+            0
+        };
+        device::check_memory(&found, size, packed)
     })?;
     let dataset = data::load(&args.data, &model.dir, args.max_len)?;
     let (examples, validation) = schedule::split(dataset.examples, Options::default().seed);
@@ -89,9 +98,14 @@ fn train(args: TrainArgs) -> Result<()> {
 
     let half = found.dtype == FloatDType::F16;
     println!(
-        "Device  {}{}",
+        "Device  {}{}{}",
         found.name,
-        if half { ", in half precision" } else { "" }
+        if half { ", in half precision" } else { "" },
+        if args.qlora {
+            ", over a 4-bit base"
+        } else {
+            ""
+        }
     );
     let device = found.device.autodiff();
     let options = Options {
@@ -115,7 +129,11 @@ fn train(args: TrainArgs) -> Result<()> {
     let mut after_first = None;
     let mut scores = Vec::new();
     let trained = device::guard(|| -> Result<_> {
-        let (_, base) = load::model(&model.dir, &device, found.dtype)?;
+        let base = if args.qlora {
+            qlora::load(&model.dir, &device, found.dtype)?
+        } else {
+            load::model(&model.dir, &device, found.dtype)?.1
+        };
         let base = train::attach(base, &options);
         train::train(base, &examples, &validation, &options, &device, |p| {
             // The first step compiles GPU kernels, so it says little about the rest.

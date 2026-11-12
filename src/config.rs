@@ -111,21 +111,35 @@ impl Config {
     /// Number of weights in the model, known before downloading any of them.
     pub fn parameters(&self) -> usize {
         let (hidden, head_dim) = (self.hidden_size, self.head_dim());
-        let (q, kv) = (
-            self.num_attention_heads * head_dim,
-            self.kv_heads() * head_dim,
-        );
+        let (q, kv) = self.attention_widths();
         let bias = if self.attention_bias() { q + 2 * kv } else { 0 };
         let norms = if self.qk_norm() { 2 * head_dim } else { 0 };
-        let attention = 2 * hidden * q + 2 * hidden * kv + bias + norms;
-        let block = attention + 3 * hidden * self.intermediate_size + 2 * hidden;
+        let block = bias + norms + 2 * hidden;
         let embeddings = self.vocab_size * hidden;
         let head = if self.tie_word_embeddings {
             0
         } else {
             embeddings
         };
-        embeddings + self.num_hidden_layers * block + hidden + head
+        embeddings + self.projection_parameters() + self.num_hidden_layers * block + hidden + head
+    }
+
+    /// How many of those weights are in the projections, which get adapters and which
+    /// QLoRA packs into 4 bits.
+    pub fn projection_parameters(&self) -> usize {
+        let hidden = self.hidden_size;
+        let (q, kv) = self.attention_widths();
+        let block = 2 * hidden * q + 2 * hidden * kv + 3 * hidden * self.intermediate_size;
+        self.num_hidden_layers * block
+    }
+
+    /// Output widths of the query projection and of the key and value projections.
+    fn attention_widths(&self) -> (usize, usize) {
+        let head_dim = self.head_dim();
+        (
+            self.num_attention_heads * head_dim,
+            self.kv_heads() * head_dim,
+        )
     }
 }
 

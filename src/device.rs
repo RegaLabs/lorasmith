@@ -77,7 +77,9 @@ pub fn cpu() -> Found {
 /// the weights take. Training needs more than that, so only models with no chance are
 /// turned down; the rest can still run out later. The CPU isn't probed: running out of
 /// system RAM ends the process instead of panicking.
-pub fn check_memory(found: &Found, parameters: usize) -> Result<()> {
+///
+/// `packed` says how many of the weights QLoRA holds in 4 bits: none without it.
+pub fn check_memory(found: &Found, parameters: usize, packed: usize) -> Result<()> {
     if found.device == Device::flex() {
         return Ok(());
     }
@@ -85,7 +87,15 @@ pub fn check_memory(found: &Found, parameters: usize) -> Result<()> {
     // so bigger chunks cost the training that follows up to 260 MB of GPU memory.
     const CHUNK: usize = 4 << 20;
     let bytes_per_weight = if found.dtype == FloatDType::F16 { 2 } else { 4 };
-    let needed = (parameters + parameters / 4) * bytes_per_weight;
+    // A packed weight takes 4 bits, and each block of them shares a 32-bit scale.
+    let packed_bits = 4 * packed + 32 * packed.div_ceil(usize::from(crate::qlora::BLOCK));
+    let weights = (parameters - packed) * bytes_per_weight + packed_bits / 8;
+    let needed = weights + weights / 4;
+    let advice = if packed == 0 {
+        "Try --qlora to hold it in 4 bits, a smaller model"
+    } else {
+        "Try a smaller model"
+    };
     let probe = guard(|| {
         let held: Vec<Tensor<1>> = (0..needed.div_ceil(CHUNK))
             .map(|_| Tensor::empty([CHUNK / size_of::<f32>()], &found.device))
@@ -100,7 +110,7 @@ pub fn check_memory(found: &Found, parameters: usize) -> Result<()> {
     found.device.memory_cleanup();
     probe.map_err(|_| {
         anyhow!(
-            "{} doesn't have the {:.1} GB of memory this model needs. Try a smaller model \
+            "{} doesn't have the {:.1} GB of memory this model needs. {advice} \
              such as qwen2.5:0.5b, or --cpu to use system RAM instead",
             found.name,
             needed as f64 / 1e9
@@ -135,7 +145,7 @@ pub fn guard<T>(f: impl FnOnce() -> T) -> Result<T> {
             .any(|m| m.to_lowercase().contains("out of memory"))
         {
             return anyhow!(
-                "the device ran out of memory. Try --batch-size 1, --max-len 512, \
+                "the device ran out of memory. Try --qlora, --batch-size 1, --max-len 512, \
                  a smaller model, or --cpu to use system RAM instead"
             );
         }
@@ -167,7 +177,7 @@ mod tests {
 
     #[test]
     fn the_cpu_is_never_probed_for_memory() {
-        assert!(check_memory(&cpu(), usize::MAX / 8).is_ok());
+        assert!(check_memory(&cpu(), usize::MAX / 8, 0).is_ok());
     }
 
     #[test]

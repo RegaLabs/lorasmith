@@ -8,7 +8,7 @@ ollama create my-data -f runs/my-data/Modelfile
 ollama run my-data
 ```
 
-> **Status:** early work in progress. Training, download and export work on real models, and the result runs in Ollama. GPUs that compute in float16 train in half precision, which takes about a third less memory (Qwen2.5-0.5B: 2.2 GB instead of 3.2 GB on an Intel HD 630) for the same losses. Other GPUs, such as older NVIDIA cards under Vulkan, and the CPU train in float32: there a 4 GB GPU trains models up to about 0.5B parameters (Qwen2.5-0.5B: 81 steps in about 3 minutes on a Quadro M2200). A model too big for the GPU needs `--cpu`, and loraforge says so before downloading it.
+> **Status:** early work in progress. Training, download and export work on real models, and the result runs in Ollama. GPUs that compute in float16 train in half precision, which takes about a third less memory (Qwen2.5-0.5B: 2.2 GB instead of 3.2 GB on an Intel HD 630) for the same losses. Other GPUs, such as older NVIDIA cards under Vulkan, and the CPU train in float32: there a 4 GB GPU trains models up to about 0.5B parameters (Qwen2.5-0.5B: 81 steps in about 3 minutes on a Quadro M2200). `--qlora` holds the model in 4 bits while training, on any GPU: Qwen2.5-0.5B then peaks at 1.8 GB of GPU memory instead of 2.9 GB on the same Quadro, reaches the same loss, and takes about 20 seconds longer; how large a model that lets a 4 GB GPU train isn't measured yet. A model too big for the GPU needs `--qlora` or `--cpu`, and loraforge says so before downloading it. This branch builds on Burn 0.23, which isn't released yet.
 
 ## Why
 
@@ -31,6 +31,7 @@ loraforge devices                                   # which GPU it will use
 loraforge train smollm2:135m my-data.jsonl          # a short name
 loraforge train Qwen/Qwen3-0.6B my-data.jsonl       # any Hugging Face id
 loraforge train ./my-local-model my-data.jsonl --epochs 5 --cpu
+loraforge train qwen2.5:0.5b my-data.jsonl --qlora  # 4-bit base, for a small GPU
 ```
 
 Models can be Llama, Mistral, Qwen2 or Qwen3, and their fine-tunes. Short names: `smollm2:135m`, `smollm2:360m`, `smollm2:1.7b`, `qwen2.5:0.5b`, `qwen2.5:1.5b`, `qwen2.5:3b`, `qwen2.5:7b`, `qwen3:0.6b`, `qwen3:1.7b`, `qwen3:4b`, `qwen3:8b`, `llama3.2:1b`, `llama3.2:3b`, `mistral:7b`. Llama and Mistral are gated: accept their license on Hugging Face and set `HF_TOKEN`.
@@ -60,7 +61,7 @@ GGUF export covers byte-level BPE tokenizers (Llama 3, Qwen, SmolLM) and Sentenc
 4. ~~Training loop with LoRA~~
 5. ~~Export: PEFT adapter, merged model, GGUF, Ollama `Modelfile`~~
 6. ~~Model download and short aliases~~
-7. QLoRA, ~~half precision~~ and ~~memory checks~~
+7. ~~QLoRA, half precision and memory checks~~
 8. Release binaries for Linux, macOS and Windows: ~~release workflow~~, first tagged release
 
 ## Contributing

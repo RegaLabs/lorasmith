@@ -15,14 +15,18 @@ use crate::model::Llama;
 /// Embeddings and the output head stay as they are.
 const TARGETS: &str = r"\.(q|k|v|o|gate|up|down)_proj\.weight$";
 
+/// The weights that get adapters, which are also the ones QLoRA packs into 4 bits.
+pub fn targets() -> ParamGroup {
+    ParamGroup::from_regex(TARGETS).expect("TARGETS is a valid regex")
+}
+
 /// Freezes `model` and attaches fresh adapters. As in PEFT, A is uniform in ±1/√in and
 /// B is zero, so the output doesn't change until training starts.
 pub fn attach(model: Llama, rank: usize, alpha: f64) -> Llama {
-    let targets = ParamGroup::from_regex(TARGETS).expect("TARGETS is a valid regex");
     // The adapters stay in f32 over a half-precision base: one optimizer step changes them
     // by less than f16 can tell apart.
     let lora = Lora::new(rank, alpha)
-        .set_param_group(targets)
+        .set_param_group(targets())
         .set_dtype(FloatDType::F32);
     let model = model.apply_lora(lora);
     // Burn draws A from Normal(0, 1/rank), which for a 576-wide layer is 2.6 times PEFT's
