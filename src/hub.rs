@@ -28,6 +28,8 @@ const ALIASES: &[(&str, &str)] = &[
 
 /// Files besides the weights that the merged model folder should carry along.
 const EXTRAS: &[&str] = &[
+    // SentencePiece tokenizers keep the piece scores GGUF needs only in this file.
+    "tokenizer.model",
     "generation_config.json",
     "special_tokens_map.json",
     "chat_template.jinja",

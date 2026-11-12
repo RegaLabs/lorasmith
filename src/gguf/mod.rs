@@ -1,6 +1,7 @@
 //! Writes GGUF, the single-file format llama.cpp, Ollama and LM Studio run on any hardware.
 
 mod model;
+mod sentencepiece;
 mod shards;
 mod vocab;
 
@@ -24,6 +25,7 @@ pub enum Value {
     Str(String),
     Strs(Vec<String>),
     I32s(Vec<i32>),
+    F32s(Vec<f32>),
 }
 
 /// Storage type of a tensor's data.
@@ -213,6 +215,14 @@ fn value(out: &mut impl Write, value: &Value) -> Result<()> {
                 out.write_all(&item.to_le_bytes())?;
             }
         }
+        Value::F32s(items) => {
+            out.write_all(&ARRAY.to_le_bytes())?;
+            out.write_all(&F32.to_le_bytes())?;
+            out.write_all(&(items.len() as u64).to_le_bytes())?;
+            for item in items {
+                out.write_all(&item.to_le_bytes())?;
+            }
+        }
     }
     Ok(())
 }
@@ -225,6 +235,7 @@ fn value_len(value: &Value) -> usize {
         Value::Str(v) => 8 + v.len(),
         Value::Strs(items) => 4 + 8 + items.iter().map(|s| 8 + s.len()).sum::<usize>(),
         Value::I32s(items) => 4 + 8 + 4 * items.len(),
+        Value::F32s(items) => 4 + 8 + 4 * items.len(),
     }
 }
 

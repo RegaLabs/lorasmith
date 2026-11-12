@@ -1,5 +1,5 @@
-//! The tokenizer as metadata for llama.cpp's byte-level BPE tokenizer, following
-//! what llama.cpp's `convert_hf_to_gguf.py` writes for the same model.
+//! The tokenizer as GGUF metadata, following what llama.cpp's `convert_hf_to_gguf.py`
+//! writes for the same model: its "gpt2" tokenizer for byte-level BPE, "llama" for SentencePiece.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -10,7 +10,7 @@ use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
 
-use super::Value;
+use super::{Value, sentencepiece};
 use crate::chat;
 use crate::config::Config;
 
@@ -19,10 +19,13 @@ const CHECK_TEXT: &str = include_str!("pretokenizer_check.txt");
 /// `hash<TAB>name` pairs, copied from llama.cpp (MIT licensed).
 const PRETOKENIZERS: &str = include_str!("pretokenizers.tsv");
 
-const NORMAL: i32 = 1;
-const CONTROL: i32 = 3;
-const USER_DEFINED: i32 = 4;
-const UNUSED: i32 = 5;
+/// GGUF metadata keys with their values, in the order they are written.
+pub(super) type Keys = Vec<(String, Value)>;
+
+pub(super) const NORMAL: i32 = 1;
+pub(super) const CONTROL: i32 = 3;
+pub(super) const USER_DEFINED: i32 = 4;
+pub(super) const UNUSED: i32 = 5;
 
 /// Tokenizer keys for the GGUF header.
 pub fn metadata(model_dir: &Path, config: &Config) -> Result<Vec<(String, Value)>> {
@@ -36,38 +39,32 @@ pub fn metadata(model_dir: &Path, config: &Config) -> Result<Vec<(String, Value)
     let model_config: Json =
         serde_json::from_str(&std::fs::read_to_string(model_dir.join("config.json"))?)?;
 
-    if json["model"]["type"] != "BPE" || json["model"]["byte_fallback"] == true {
+    // Like llama.cpp's converter, take a SentencePiece model when there is one.
+    let bpe = json["model"]["type"] == "BPE";
+    let (tokens, mut keys) = if bpe && model_dir.join("tokenizer.model").exists() {
+        let (tokens, mut keys) = sentencepiece::keys(model_dir, &json, config.vocab_size)?;
+        if let Some(prefix) = tokenizer_config["add_prefix_space"].as_bool() {
+            let key = "tokenizer.ggml.add_space_prefix".to_string();
+            keys.push((key, Value::Bool(prefix)));
+        }
+        (tokens, keys)
+    } else if bpe && json["model"]["byte_fallback"] != true {
+        byte_level(&json, &tokenizer, config.vocab_size)?
+    } else {
         bail!(
-            "GGUF export supports byte-level BPE tokenizers (Llama 3, Qwen, SmolLM) for now, \
-             not SentencePiece ones such as Mistral's. The adapter and merged model are still usable"
+            "GGUF export supports byte-level BPE tokenizers (Llama 3, Qwen, SmolLM) and \
+             SentencePiece ones that come with a `tokenizer.model` file (Mistral, Llama 2). \
+             If the base model has a `tokenizer.model`, copy it into {} and train again. \
+             The adapter and merged model are still usable",
+            model_dir.display()
         );
-    }
-    let (tokens, types) = tokens(&json, config.vocab_size)?;
+    };
     let ids: HashMap<&str, u32> = tokens
         .iter()
         .enumerate()
         .map(|(i, t)| (t.as_str(), i as u32))
         .collect();
 
-    let mut keys = vec![
-        (
-            "tokenizer.ggml.model".to_string(),
-            Value::Str("gpt2".into()),
-        ),
-        (
-            "tokenizer.ggml.pre".to_string(),
-            Value::Str(pretokenizer(&tokenizer)?),
-        ),
-        (
-            "tokenizer.ggml.tokens".to_string(),
-            Value::Strs(tokens.clone()),
-        ),
-        ("tokenizer.ggml.token_type".to_string(), Value::I32s(types)),
-        (
-            "tokenizer.ggml.merges".to_string(),
-            Value::Strs(merges(&json)?),
-        ),
-    ];
     let mut special = HashMap::new();
     for (kind, key) in [
         ("bos", "bos_token_id"),
@@ -109,6 +106,34 @@ pub fn metadata(model_dir: &Path, config: &Config) -> Result<Vec<(String, Value)
     Ok(keys)
 }
 
+fn byte_level(
+    json: &Json,
+    tokenizer: &Tokenizer,
+    vocab_size: usize,
+) -> Result<(Vec<String>, Keys)> {
+    let (tokens, types) = tokens(json, vocab_size)?;
+    let keys = vec![
+        (
+            "tokenizer.ggml.model".to_string(),
+            Value::Str("gpt2".into()),
+        ),
+        (
+            "tokenizer.ggml.pre".to_string(),
+            Value::Str(pretokenizer(tokenizer)?),
+        ),
+        (
+            "tokenizer.ggml.tokens".to_string(),
+            Value::Strs(tokens.clone()),
+        ),
+        ("tokenizer.ggml.token_type".to_string(), Value::I32s(types)),
+        (
+            "tokenizer.ggml.merges".to_string(),
+            Value::Strs(merges(json)?),
+        ),
+    ];
+    Ok((tokens, keys))
+}
+
 /// Every id up to the model's vocabulary size, with its llama.cpp token type.
 /// Models often reserve more embedding rows than the tokenizer uses; those become padding.
 fn tokens(json: &Json, vocab_size: usize) -> Result<(Vec<String>, Vec<i32>)> {
@@ -142,7 +167,7 @@ fn tokens(json: &Json, vocab_size: usize) -> Result<(Vec<String>, Vec<i32>)> {
 }
 
 /// Some models forget to mark control tokens as special; llama.cpp catches them by shape.
-fn looks_special(token: &str) -> bool {
+pub(super) fn looks_special(token: &str) -> bool {
     (token.starts_with("<|") && token.ends_with("|>")) || matches!(token, "<pad>" | "<mask>")
 }
 
@@ -216,6 +241,40 @@ mod tests {
         assert!(
             matches!(&keys["tokenizer.chat_template"], Value::Str(t) if t.contains("im_start"))
         );
+    }
+
+    #[test]
+    fn sentencepiece_models_use_the_llama_tokenizer() {
+        let dir = Path::new("tests/fixtures/sentencepiece");
+        let config =
+            Config::parse(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+        let keys: HashMap<String, Value> = metadata(dir, &config).unwrap().into_iter().collect();
+        assert_eq!(keys["tokenizer.ggml.model"], Value::Str("llama".into()));
+        assert_eq!(keys["tokenizer.ggml.pre"], Value::Str("default".into()));
+        assert!(matches!(&keys["tokenizer.ggml.scores"], Value::F32s(s) if s.len() == 320));
+        assert!(!keys.contains_key("tokenizer.ggml.merges"));
+        assert_eq!(keys["tokenizer.ggml.bos_token_id"], Value::U32(1));
+        assert_eq!(keys["tokenizer.ggml.eos_token_id"], Value::U32(2));
+        assert_eq!(keys["tokenizer.ggml.unknown_token_id"], Value::U32(0));
+        assert_eq!(keys["tokenizer.ggml.add_bos_token"], Value::Bool(true));
+        assert_eq!(keys["tokenizer.ggml.add_eos_token"], Value::Bool(false));
+    }
+
+    #[test]
+    fn sentencepiece_without_its_model_file_says_what_to_do() {
+        let dir = std::env::temp_dir().join(format!("loraforge-spm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in ["config.json", "tokenizer.json", "tokenizer_config.json"] {
+            std::fs::copy(
+                Path::new("tests/fixtures/sentencepiece").join(file),
+                dir.join(file),
+            )
+            .unwrap();
+        }
+        let config =
+            Config::parse(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+        let error = metadata(&dir, &config).unwrap_err().to_string();
+        assert!(error.contains("tokenizer.model"), "{error}");
     }
 
     #[test]
