@@ -1,11 +1,12 @@
 [package]
-name = "loraforge"
+name = "lorasmith"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Fine-tune an open LLM on your own data with one command, on any GPU or none."
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+repository = "https://github.com/RegaLabs/lorasmith"
 keywords = ["lora", "llm", "fine-tuning", "burn", "gpu"]
 categories = ["science", "command-line-utilities"]
 

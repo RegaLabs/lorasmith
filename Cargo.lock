@@ -3962,7 +3962,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "loraforge"
+name = "lorasmith"
 version = "0.1.0"
 dependencies = [
  "anyhow",

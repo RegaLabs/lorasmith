@@ -20,7 +20,7 @@ fn check(name: &str) {
     let expected: Expected =
         serde_json::from_str(&fs::read_to_string(dir.join("expected.json")).unwrap()).unwrap();
     let device = Device::flex();
-    let (_, model) = loraforge::load::model(&dir, &device, FloatDType::F32).unwrap();
+    let (_, model) = lorasmith::load::model(&dir, &device, FloatDType::F32).unwrap();
 
     let shape = [expected.tokens.len(), expected.tokens[0].len()];
     let tokens = expected.tokens.concat();

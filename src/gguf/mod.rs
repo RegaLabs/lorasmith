@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn layout_matches_the_spec() {
-        let path = std::env::temp_dir().join(format!("loraforge-{}.gguf", std::process::id()));
+        let path = std::env::temp_dir().join(format!("lorasmith-{}.gguf", std::process::id()));
         let metadata = [(
             "general.architecture".to_string(),
             Value::Str("llama".into()),

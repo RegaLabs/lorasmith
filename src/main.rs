@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use burn::tensor::FloatDType;
 use clap::{Parser, Subcommand};
-use loraforge::train::{Options, Progress};
-use loraforge::{data, device, export, hub, load, qlora, schedule, train};
+use lorasmith::train::{Options, Progress};
+use lorasmith::{data, device, export, hub, load, qlora, schedule, train};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -19,7 +19,7 @@ struct Cli {
 enum Command {
     /// Fine-tune a model on a JSONL file and write an adapter, a merged model and a Modelfile.
     Train(TrainArgs),
-    /// Show the devices loraforge can train on and which one it will pick.
+    /// Show the devices lorasmith can train on and which one it will pick.
     Devices,
 }
 

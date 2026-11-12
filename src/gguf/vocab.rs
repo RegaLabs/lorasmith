@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn sentencepiece_without_its_model_file_says_what_to_do() {
-        let dir = std::env::temp_dir().join(format!("loraforge-spm-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lorasmith-spm-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for file in ["config.json", "tokenizer.json", "tokenizer_config.json"] {
             std::fs::copy(

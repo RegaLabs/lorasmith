@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use burn::tensor::{Device, FloatDType, Tensor, TensorData, Tolerance};
-use loraforge::data::Example;
-use loraforge::{load, lora, train};
+use lorasmith::data::Example;
+use lorasmith::{load, lora, train};
 use serde_json::Value;
 
 const FIXTURE: &str = "tests/fixtures/lora";

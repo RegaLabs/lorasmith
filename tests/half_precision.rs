@@ -4,10 +4,10 @@
 use std::path::Path;
 
 use burn::tensor::{DType, Device, FloatDType, Int, Tensor, TensorData, Tolerance};
-use loraforge::data::Example;
-use loraforge::model::Llama;
-use loraforge::train::{self, Options};
-use loraforge::{export, load, lora};
+use lorasmith::data::Example;
+use lorasmith::model::Llama;
+use lorasmith::train::{self, Options};
+use lorasmith::{export, load, lora};
 
 const BASE: &str = "tests/fixtures/llama";
 const STEPS: usize = 8;
@@ -108,7 +108,7 @@ fn merging_a_half_precision_model_starts_from_the_published_weights() {
     let device = Device::flex().autodiff();
     let (model, _) = trained(FloatDType::F16, 1024.0, &device);
     let expected = logits(&model, &device);
-    let dir = std::env::temp_dir().join(format!("loraforge-half-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("lorasmith-half-{}", std::process::id()));
     export::merged(model, Path::new(BASE), &dir).unwrap();
 
     let (_, published) = load::model(Path::new(BASE), &device, FloatDType::F32).unwrap();

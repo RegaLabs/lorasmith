@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["torch", "transformers", "peft", "safetensors"]
 # ///
-"""Checks that a loraforge run loads in Hugging Face PEFT and transformers unchanged.
+"""Checks that a lorasmith run loads in Hugging Face PEFT and transformers unchanged.
 
 Run with `uv run tools/check_export.py <base model dir> <run dir>`. It compares the logits of
 base + PEFT adapter against the merged model, and prints the largest relative difference.

@@ -92,7 +92,7 @@ mod tests {
         let device = Device::flex();
         let config = tiny("qwen2");
         let original = Llama::new(&config, &device);
-        let dir = std::env::temp_dir().join(format!("loraforge-load-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lorasmith-load-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let mut store = SafetensorsStore::from_file(dir.join("model.safetensors"))
             .with_to_adapter(BurnToPyTorchAdapter)
@@ -110,7 +110,7 @@ mod tests {
     fn bf16_checkpoints_load_in_the_precision_asked_for() {
         let device = Device::flex();
         let config = tiny("llama");
-        let dir = std::env::temp_dir().join(format!("loraforge-bf16-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lorasmith-bf16-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let mut store = SafetensorsStore::from_file(dir.join("model.safetensors"))
             .with_to_adapter(BurnToPyTorchAdapter.chain(FloatCastAdapter::to(DType::BF16)))
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn refuses_a_folder_without_weights() {
-        let dir = std::env::temp_dir().join(format!("loraforge-empty-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lorasmith-empty-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let mut model = Llama::new(&tiny("llama"), &Device::flex());
         let error = weights(&mut model, &dir, FloatDType::F32).unwrap_err();

@@ -11,7 +11,7 @@ library, so the Rust reader is checked against both without `cargo test` needing
 
 One deliberate difference: llama.cpp takes added tokens from `added_tokens_decoder` in
 tokenizer_config.json, which transformers 5 no longer writes. tokenizer.json lists the same
-tokens in every version, so that is what loraforge and this script read.
+tokens in every version, so that is what lorasmith and this script read.
 """
 
 import io

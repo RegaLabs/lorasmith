@@ -110,7 +110,7 @@ fn download(
     for file in ["tokenizer.json", "tokenizer_config.json"] {
         if !files.iter().any(|f| f == file) {
             bail!(
-                "{id} has no {file}; loraforge needs a fast tokenizer. Try another upload of this model"
+                "{id} has no {file}; lorasmith needs a fast tokenizer. Try another upload of this model"
             );
         }
         get(file)?;

@@ -171,7 +171,7 @@ mod tests {
         });
         let lora = model.layers[0].mlp.down_proj.weight.adapter().unwrap();
         let change = lora.a.val().matmul(lora.b.val()).mul_scalar(lora.scale);
-        let dir = std::env::temp_dir().join(format!("loraforge-qlora-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("lorasmith-qlora-{}", std::process::id()));
         crate::export::all(model, "tiny-llama", Path::new(BASE), &dir).unwrap();
 
         let down_proj = |dir: &Path| {

@@ -85,7 +85,7 @@ mod tests {
 
     fn jsonl(name: &str, lines: &[&str]) -> PathBuf {
         let path =
-            std::env::temp_dir().join(format!("loraforge-{name}-{}.jsonl", std::process::id()));
+            std::env::temp_dir().join(format!("lorasmith-{name}-{}.jsonl", std::process::id()));
         std::fs::write(&path, lines.join("\n")).unwrap();
         path
     }

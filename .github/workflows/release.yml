@@ -1,4 +1,4 @@
-# Pushing a version tag such as v0.1.0 builds loraforge on every platform and publishes the
+# Pushing a version tag such as v0.1.0 builds lorasmith on every platform and publishes the
 # archives as a GitHub release.
 name: release
 
