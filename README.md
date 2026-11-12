@@ -22,7 +22,7 @@ With [Rust](https://rustup.rs) 1.95 or newer:
 cargo install --locked --git https://github.com/RegaLabs/lorasmith
 ```
 
-From a checkout, `cargo install --locked --path .` does the same. lorasmith isn't on crates.io yet: a crate there can't depend on a git commit, so that waits for Burn 0.23.
+From a checkout, `cargo install --locked --path .` does the same. `cargo install --locked lorasmith` gets the release on crates.io, with one difference for now: a crate there can't depend on a git commit, so it is built on the latest Burn pre-release, where `--qlora` trains but saves little or no GPU memory. That ends when Burn 0.23 is released with the two fixes it needs.
 
 Every version tag also gets archives for Linux (x86_64, glibc 2.35 or newer), macOS (Apple Silicon and Intel) and Windows (x86_64), each holding the one `lorasmith` binary to unpack and put on your `PATH`. None is published yet.
 
