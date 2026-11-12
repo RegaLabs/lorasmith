@@ -30,7 +30,7 @@ If it isn't in scope, open an issue before writing it. Saying no is how this sta
 - Rust stable, edition 2024, MSRV 1.95 (Burn's).
 - Burn 0.22+ handles tensors, autodiff, LoRA and QLoRA. We don't write kernels or LoRA math.
 - Backend is picked at runtime: wgpu (Vulkan, Metal, DX12) first, CPU fallback. CUDA and ROCm are opt-in cargo features, never required.
-- Allowed dependencies: `burn`, `tokenizers`, `hf-hub`, `safetensors`, `serde`, `serde_json`, `clap`, `minijinja`, `anyhow`. Anything else needs a one-line reason in the PR.
+- Allowed dependencies: `burn`, `tokenizers`, `hf-hub`, `safetensors`, `serde`, `serde_json`, `clap`, `minijinja`, `minijinja-contrib` (chat templates call Python string methods), `sha2` (llama.cpp names a pre-tokenizer by a SHA-256 fingerprint), `anyhow`. Anything else needs a one-line reason in the PR.
 - No Python at runtime. Python is allowed only in `tools/`, for generating test fixtures with HF PEFT.
 
 ## Product rules
