@@ -68,7 +68,7 @@ GGUF export covers byte-level BPE tokenizers (Llama 3, Qwen, SmolLM) and Sentenc
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) first. It applies to people and AI agents alike. `tools/` holds Python scripts that make test fixtures and check exports against Hugging Face PEFT; the Rust build and tests never need them. `tools/package.sh` packs the release archive for the machine it runs on, and `.github/workflows/release.yml` runs it on every platform when a version tag is pushed.
+Issues and pull requests are welcome: [CONTRIBUTING.md](CONTRIBUTING.md) says how to build, test and send one. The rules the code follows are in [AGENTS.md](AGENTS.md), and they apply to people and AI agents alike. `tools/` holds Python scripts that make test fixtures and check exports against Hugging Face PEFT; the Rust build and tests never need them. `tools/package.sh` packs the release archive for the machine it runs on, and `.github/workflows/release.yml` runs it on every platform when a version tag is pushed.
 
 ## License
 
