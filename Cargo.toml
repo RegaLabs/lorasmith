@@ -19,7 +19,7 @@ autotune = ["burn/autotune"]
 
 [dependencies]
 anyhow = "1"
-burn = { version = "0.22.1", default-features = false, features = [
+burn = { path = "/tmp/claude-1000/-home-jackal--claude-spares-spare-Sg4aGG/758dbc5d-01df-4245-a710-167821daec91/scratchpad/burn/crates/burn", default-features = false, features = [
     "std",
     "autodiff",
     "optim",

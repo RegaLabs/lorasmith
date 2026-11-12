@@ -159,6 +159,7 @@ impl Attention {
             self.repeat_kv(v, repeat),
             None,
             None,
+            None,
             options,
         );
         lora::forward(

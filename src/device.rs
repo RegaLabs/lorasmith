@@ -43,7 +43,10 @@ pub fn works(device: &Device) -> bool {
 }
 
 fn gpu(device: Device) -> Option<Found> {
-    let identity = quietly(|| device.identity()).flatten()?;
+    let identity = quietly(|| device.capabilities())
+        .flatten()?
+        .properties
+        .identity;
     // Software rasterizers like llvmpipe pose as GPUs but lose badly to the CPU backend.
     identity.physical.as_ref()?;
     let half = quietly(|| device.supports_dtype(FloatDType::F16)).unwrap_or(false);
