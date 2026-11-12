@@ -1,0 +1,4 @@
+# Line endings stay LF on every platform. src/gguf/pretokenizer_check.txt is hashed byte for
+# byte to tell which pre-tokenizer a model uses, and a Windows checkout that turns LF into
+# CRLF changes the hash, so no model is recognised.
+* text=auto eol=lf

@@ -1,5 +1,7 @@
 # Every pull request and every push to main gets the same three checks contributors run
 # locally: formatting, lints and the tests. The tests need no GPU and download nothing.
+# They run on all three systems, because a release was once stopped by a test that only
+# failed on Windows.
 name: ci
 
 on:
@@ -16,7 +18,15 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-22.04
+    strategy:
+      # One system failing shouldn't hide what the others say.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - run: cargo fmt --check

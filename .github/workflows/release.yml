@@ -12,6 +12,8 @@ permissions:
 jobs:
   build:
     strategy:
+      # One system failing shouldn't hide what the others say.
+      fail-fast: false
       matrix:
         # The oldest Ubuntu image, because a Linux binary only runs where glibc is at least
         # as new as where it was built: 2.35 here. macos-latest is Apple Silicon.
