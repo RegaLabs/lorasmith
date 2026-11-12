@@ -46,7 +46,8 @@ fn trains_on_the_best_device() {
         );
         last = Instant::now();
         losses.push(p.loss);
-    });
+    })
+    .unwrap();
     println!("{}: {:.1}s", found.name, start.elapsed().as_secs_f32());
     assert!(losses.last() < losses.first());
 }

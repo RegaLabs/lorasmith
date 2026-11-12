@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
+use anyhow::{Result, ensure};
 use burn::module::Module;
 use burn::optim::{AdamWConfig, GradientsParams, ModuleOptimizer};
 use burn::tensor::{Device, TensorData};
@@ -123,6 +124,7 @@ pub fn optimizer() -> ModuleOptimizer {
 /// Trains the adapters on `examples`, reshuffled every epoch. With `validation` examples,
 /// it ends with the adapters from the epoch that did best on them, like the Hugging Face
 /// Trainer's `load_best_model_at_end`. `device` must be an autodiff device holding `model`.
+/// Fails when the loss has stopped being a number by the last step.
 pub fn train(
     mut model: Llama,
     examples: &[Example],
@@ -130,13 +132,11 @@ pub fn train(
     options: &Options,
     device: &Device,
     mut report: impl FnMut(Progress<'_>),
-) -> Llama {
+) -> Result<Llama> {
     let mut optimizer = optimizer();
-    let mut loss_scale = if model.is_half() {
-        HALF_LOSS_SCALE
-    } else {
-        1.0
-    };
+    let half = model.is_half();
+    let mut loss_scale = if half { HALF_LOSS_SCALE } else { 1.0 };
+    let mut last_loss = 0.0;
     let per_epoch = examples.len().div_ceil(options.batch_size);
     let total = per_epoch * options.epochs;
     let mut step = 0;
@@ -157,6 +157,7 @@ pub fn train(
                 device,
             );
             step += 1;
+            last_loss = loss;
             let epoch_done = i + 1 == per_epoch;
             let checked = epoch_done && !validation.is_empty();
             let score = checked.then(|| evaluate(&model, validation, options.batch_size, device));
@@ -176,10 +177,20 @@ pub fn train(
             });
         }
     }
+    ensure!(
+        last_loss.is_finite(),
+        "the loss stopped being a number, so this model would only write nonsense. \
+         Try a lower --learning-rate{}",
+        if half {
+            ", or --cpu to train in full precision"
+        } else {
+            ""
+        }
+    );
     if let Some((_, factors)) = best {
         model = lora::set_factors(model, |path, _| factors.get(path).cloned());
     }
-    model
+    Ok(model)
 }
 
 /// One optimizer step on one batch. Returns the updated model and the batch's loss before the step.
@@ -281,7 +292,8 @@ mod tests {
             &options,
             &device,
             |p| losses.push(p.loss),
-        );
+        )
+        .unwrap();
 
         assert_eq!(losses.len(), 40);
         assert!(
@@ -291,6 +303,31 @@ mod tests {
             losses[39]
         );
         assert_eq!(embeddings, model.embed_tokens.weight.val().into_data());
+    }
+
+    #[test]
+    fn a_loss_that_stops_being_a_number_is_an_error() {
+        let device = Device::flex().autodiff();
+        let model = attach(Llama::new(&tiny("qwen2"), &device), &Options::default());
+        let example = Example {
+            tokens: vec![5, 9, 13, 17, 21, 25, 29, 33],
+            train: vec![true; 8],
+        };
+        // A step this large pushes the adapters past what f32 can hold.
+        let options = Options {
+            learning_rate: 1e30,
+            epochs: 4,
+            batch_size: 1,
+            ..Options::default()
+        };
+        let mut losses = Vec::new();
+        let result = train(model, &[example], &[], &options, &device, |p| {
+            losses.push(p.loss)
+        });
+
+        assert!(!losses[3].is_finite(), "losses were {losses:?}");
+        let error = result.expect_err("training must not hand back the model");
+        assert!(format!("{error:#}").contains("--learning-rate"));
     }
 
     #[test]

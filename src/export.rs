@@ -196,7 +196,7 @@ mod tests {
             batch_size: 1,
             ..Options::default()
         };
-        train::train(model, &[example], &[], &options, device, |_| ())
+        train::train(model, &[example], &[], &options, device, |_| ()).unwrap()
     }
 
     fn temp(name: &str) -> PathBuf {
