@@ -1,7 +1,6 @@
 //! The LoRA training loop.
 
 use std::collections::HashMap;
-use std::f64::consts::PI;
 
 use anyhow::{Result, ensure};
 use burn::module::Module;
@@ -12,6 +11,7 @@ use crate::batch;
 use crate::data::Example;
 use crate::lora;
 use crate::model::Llama;
+use crate::schedule::{learning_rate, shuffled};
 
 /// Training settings. The defaults are the common choices for LoRA with Hugging Face PEFT.
 #[derive(Debug, Clone)]
@@ -54,24 +54,6 @@ pub struct Progress<'a> {
     pub model: &'a Llama,
 }
 
-/// Holds out about a tenth of `examples`, picked by `seed`, to measure how training
-/// generalizes. Fewer than 20 examples are too few to spare any.
-pub fn split(examples: Vec<Example>, seed: u64) -> (Vec<Example>, Vec<Example>) {
-    let held = if examples.len() < 20 {
-        0
-    } else {
-        (examples.len() / 10).min(200)
-    };
-    // A different order than the first epoch's, which uses `seed` itself.
-    let order = shuffled(examples.len(), !seed);
-    let mut slots: Vec<Option<Example>> = examples.into_iter().map(Some).collect();
-    let validation = order[..held]
-        .iter()
-        .map(|&i| slots[i].take().expect("shuffled yields each index once"))
-        .collect();
-    (slots.into_iter().flatten().collect(), validation)
-}
-
 /// Mean loss per trained token over `examples`, without training on them.
 pub fn evaluate(model: &Llama, examples: &[Example], batch_size: usize, device: &Device) -> f32 {
     // Without autodiff, no gradient graph is kept for a loss nobody differentiates.
@@ -88,17 +70,6 @@ pub fn evaluate(model: &Llama, examples: &[Example], batch_size: usize, device: 
         count += tokens;
     }
     (sum / count.max(1) as f64) as f32
-}
-
-/// About how many optimizer steps a small dataset needs before the adapter has learned it.
-/// SmolLM2-135M learned a 36-example persona in 72 steps at lr 2e-4, and nothing in 27.
-const TARGET_STEPS: usize = 75;
-
-/// Epochs for `examples` examples: enough for about `TARGET_STEPS` steps, but never fewer
-/// than 3 passes, and at most 10 so a handful of examples isn't memorized word for word.
-pub fn epochs_for(examples: usize, batch_size: usize) -> usize {
-    let steps_per_epoch = examples.div_ceil(batch_size).max(1);
-    TARGET_STEPS.div_ceil(steps_per_epoch).clamp(3, 10)
 }
 
 /// What the loss of a half-precision model is first multiplied by, see [`step`]. From 256
@@ -220,31 +191,6 @@ pub fn step(
     }
 }
 
-/// Indices `0..len` in a random order that depends only on `seed` (splitmix64 + Fisher-Yates).
-fn shuffled(len: usize, seed: u64) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..len).collect();
-    let mut state = seed;
-    for i in (1..len).rev() {
-        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^= z >> 31;
-        order.swap(i, (z % (i as u64 + 1)) as usize);
-    }
-    order
-}
-
-/// Short linear warmup, then cosine decay to zero.
-fn learning_rate(options: &Options, step: usize, total: usize) -> f64 {
-    let warmup = (total / 20).max(1);
-    if step < warmup {
-        return options.learning_rate * (step + 1) as f64 / warmup as f64;
-    }
-    let progress = (step - warmup) as f64 / (total - warmup).max(1) as f64;
-    options.learning_rate * 0.5 * (1.0 + (PI * progress).cos())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,43 +274,5 @@ mod tests {
         assert!(!losses[3].is_finite(), "losses were {losses:?}");
         let error = result.expect_err("training must not hand back the model");
         assert!(format!("{error:#}").contains("--learning-rate"));
-    }
-
-    #[test]
-    fn a_tenth_is_held_out_from_twenty_examples_on() {
-        let examples = |n: u32| -> Vec<Example> {
-            (0..n)
-                .map(|i| Example {
-                    tokens: vec![i, i],
-                    train: vec![true, true],
-                })
-                .collect()
-        };
-        let (train, validation) = split(examples(30), 42);
-        assert_eq!((train.len(), validation.len()), (27, 3));
-        assert!(
-            validation
-                .iter()
-                .all(|v| train.iter().all(|t| t.tokens != v.tokens))
-        );
-        assert_eq!(split(examples(19), 42).1.len(), 0);
-    }
-
-    #[test]
-    fn small_datasets_get_more_epochs() {
-        assert_eq!(epochs_for(36, 4), 9);
-        assert_eq!(epochs_for(4, 4), 10);
-        assert_eq!(epochs_for(1000, 4), 3);
-    }
-
-    #[test]
-    fn shuffling_is_a_repeatable_permutation() {
-        let order = shuffled(10, 42);
-        let mut sorted = order.clone();
-        sorted.sort();
-        assert_eq!(sorted, (0..10).collect::<Vec<_>>());
-        assert_eq!(order, shuffled(10, 42));
-        assert_ne!(order, shuffled(10, 43));
-        assert_ne!(order, sorted);
     }
 }

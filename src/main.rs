@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use burn::tensor::FloatDType;
 use clap::{Parser, Subcommand};
 use loraforge::train::{Options, Progress};
-use loraforge::{data, device, export, hub, load, train};
+use loraforge::{data, device, export, hub, load, schedule, train};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -77,7 +77,7 @@ fn train(args: TrainArgs) -> Result<()> {
         device::check_memory(&found, size)
     })?;
     let dataset = data::load(&args.data, &model.dir, args.max_len)?;
-    let (examples, validation) = train::split(dataset.examples, Options::default().seed);
+    let (examples, validation) = schedule::split(dataset.examples, Options::default().seed);
     println!(
         "Data    {} examples ({} cut to {} tokens, {} skipped, {} held out to check progress)",
         examples.len() + validation.len(),
@@ -100,7 +100,7 @@ fn train(args: TrainArgs) -> Result<()> {
         learning_rate: args.learning_rate,
         epochs: args
             .epochs
-            .unwrap_or_else(|| train::epochs_for(examples.len(), args.batch_size)),
+            .unwrap_or_else(|| schedule::epochs_for(examples.len(), args.batch_size)),
         batch_size: args.batch_size,
         ..Options::default()
     };

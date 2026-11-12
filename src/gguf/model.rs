@@ -232,7 +232,7 @@ mod tests {
         let text = std::fs::read_to_string("tests/fixtures/llama/config.json").unwrap();
         let config = Config::parse(&text).unwrap();
         let factors = llama3_rope_factors(&config).unwrap();
-        let scaled = crate::model::inverse_frequencies(&config);
+        let scaled = crate::rope::inverse_frequencies(&config);
         for (i, (factor, scaled)) in factors.iter().zip(scaled).enumerate() {
             let base = 1.0
                 / config
