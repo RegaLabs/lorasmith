@@ -14,6 +14,16 @@ ollama run my-data
 
 Training a LoRA adapter today means PyTorch, CUDA versions that have to line up, half a dozen Hugging Face libraries, and a machine with an NVIDIA card. loraforge is a single binary built on [Burn](https://github.com/tracel-ai/burn). It runs on Vulkan, Metal, DirectX 12 or plain CPU, and it writes files that Hugging Face, vLLM, Ollama and llama.cpp already understand.
 
+## Install
+
+With [Rust](https://rustup.rs) 1.95 or newer, from a checkout of this repository:
+
+```bash
+cargo install --locked --path .
+```
+
+Every version tag also gets archives for Linux (x86_64, glibc 2.35 or newer), macOS (Apple Silicon and Intel) and Windows (x86_64), each holding the one `loraforge` binary to unpack and put on your `PATH`. None is published yet.
+
 ## Usage
 
 ```bash
@@ -51,11 +61,11 @@ GGUF export covers byte-level BPE tokenizers (Llama 3, Qwen, SmolLM). For Mistra
 5. ~~Export: PEFT adapter, merged model, GGUF, Ollama `Modelfile`~~
 6. ~~Model download and short aliases~~
 7. QLoRA, ~~half precision~~ and ~~memory checks~~
-8. Release binaries for Linux, macOS and Windows
+8. Release binaries for Linux, macOS and Windows: ~~release workflow~~, first tagged release
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) first. It applies to people and AI agents alike. `tools/` holds Python scripts that make test fixtures and check exports against Hugging Face PEFT; the Rust build and tests never need them.
+Read [AGENTS.md](AGENTS.md) first. It applies to people and AI agents alike. `tools/` holds Python scripts that make test fixtures and check exports against Hugging Face PEFT; the Rust build and tests never need them. `tools/package.sh` packs the release archive for the machine it runs on, and `.github/workflows/release.yml` runs it on every platform when a version tag is pushed.
 
 ## License
 

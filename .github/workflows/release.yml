@@ -1,0 +1,51 @@
+# Pushing a version tag such as v0.1.0 builds loraforge on every platform and publishes the
+# archives as a GitHub release.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        # The oldest Ubuntu image, because a Linux binary only runs where glibc is at least
+        # as new as where it was built: 2.35 here. macos-latest is Apple Silicon.
+        os: [ubuntu-22.04, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - name: The tag is the version in Cargo.toml
+        run: test "v$(cargo pkgid | sed 's/.*[#@]//')" = "$GITHUB_REF_NAME"
+      - run: cargo test --locked
+      - run: bash tools/package.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the archives with their checksums
+        working-directory: dist
+        run: |
+          sha256sum * > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" * --repo "$GITHUB_REPOSITORY" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
