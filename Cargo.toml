@@ -21,7 +21,8 @@ autotune = ["burn/autotune"]
 anyhow = "1"
 # Burn 0.23 isn't released, and two changes QLoRA needs aren't merged into it yet: the
 # factored LoRA forward (tracel-ai/burn#6465) and a quantized matmul that autodiff keeps
-# packed. This commit is Burn's main with both. Goes back to a version once 0.23 has them.
+# packed (tracel-ai/burn#6503). This commit is Burn's main with both. Goes back to a
+# version once 0.23 has them.
 burn = { git = "https://github.com/shahrryyar/burn.git", rev = "5a4134ad10049543cc79892ba73057bfd8b10725", default-features = false, features = [
     "std",
     "autodiff",
