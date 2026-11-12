@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::Result;
 use burn::module::{Module, Quantizer};
 use burn::tensor::quantization::{Calibration, QuantValue, ScaleDtype};
-use burn::tensor::{DType, Device, FloatDType};
+use burn::tensor::{Device, FloatDType};
 
 use crate::lora;
 use crate::model::Llama;
@@ -55,19 +55,12 @@ pub fn pack(model: Llama, device: &Device) -> Llama {
     model.quantize_weights_group(&mut quantizer, lora::targets())
 }
 
-/// Whether the projections are packed, and so no longer hold the published weights.
-pub fn is_packed(model: &Llama) -> bool {
-    lora::projections(model)
-        .first()
-        .is_some_and(|(_, layer)| matches!(layer.weight.base().dtype(), DType::QFloat(_)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::data::Example;
     use crate::train::{self, Options};
-    use burn::tensor::{Int, Tensor, TensorData, Tolerance};
+    use burn::tensor::{DType, Int, Tensor, TensorData, Tolerance};
 
     const BASE: &str = "tests/fixtures/llama";
 
@@ -79,6 +72,12 @@ mod tests {
             .into_data()
             .try_to_vec::<f32>()
             .unwrap()
+    }
+
+    fn is_packed(model: &Llama) -> bool {
+        lora::projections(model)
+            .first()
+            .is_some_and(|(_, layer)| matches!(layer.weight.base().dtype(), DType::QFloat(_)))
     }
 
     fn distance(a: &[f32], b: &[f32]) -> f32 {

@@ -19,6 +19,31 @@ pub enum Source {
     Values(Vec<f32>),
 }
 
+impl Source {
+    /// The precision the values are stored in.
+    pub fn dtype(&self) -> DType {
+        match self {
+            Source::File { dtype, .. } => *dtype,
+            Source::Values(_) => DType::F32,
+        }
+    }
+}
+
+/// The precisions weights are published in, under the names safetensors headers use.
+const DTYPES: [(&str, DType); 3] = [
+    ("F32", DType::F32),
+    ("F16", DType::F16),
+    ("BF16", DType::BF16),
+];
+
+/// What a safetensors header calls `dtype`, if it is one this module reads.
+pub fn dtype_name(dtype: DType) -> Option<&'static str> {
+    DTYPES
+        .iter()
+        .find(|(_, known)| *known == dtype)
+        .map(|(name, _)| *name)
+}
+
 /// Every tensor in the folder's `.safetensors` files, read from their headers only.
 pub fn tensors(dir: &Path) -> Result<Vec<(String, Vec<usize>, Source)>> {
     let mut shards: Vec<PathBuf> = std::fs::read_dir(dir)?
@@ -41,14 +66,11 @@ pub fn tensors(dir: &Path) -> Result<Vec<(String, Vec<usize>, Source)>> {
             if name == "__metadata__" {
                 continue;
             }
-            let dtype = match entry["dtype"].as_str() {
-                Some("F32") => DType::F32,
-                Some("F16") => DType::F16,
-                Some("BF16") => DType::BF16,
-                other => {
-                    bail!("{name} is stored as {other:?}; only F32, F16 and BF16 are supported")
-                }
+            let stored = entry["dtype"].as_str();
+            let Some((_, dtype)) = DTYPES.iter().find(|(known, _)| Some(*known) == stored) else {
+                bail!("{name} is stored as {stored:?}; only F32, F16 and BF16 are supported")
             };
+            let dtype = *dtype;
             let shape = entry["shape"]
                 .as_array()
                 .context("bad shape")?
@@ -75,21 +97,33 @@ pub fn tensors(dir: &Path) -> Result<Vec<(String, Vec<usize>, Source)>> {
     Ok(tensors)
 }
 
-/// The tensor's values as f32, whatever precision the file stores.
-pub fn read(source: &Source) -> Result<Vec<f32>> {
-    let (path, dtype, start, end) = match source {
-        Source::Values(values) => return Ok(values.clone()),
+/// The tensor's bytes exactly as they are stored.
+pub fn bytes(source: &Source) -> Result<Vec<u8>> {
+    let (path, start, end) = match source {
+        Source::Values(values) => {
+            return Ok(TensorData::new(values.clone(), [values.len()])
+                .as_bytes()
+                .to_vec());
+        }
         Source::File {
-            path,
-            dtype,
-            start,
-            end,
-        } => (path, *dtype, *start, *end),
+            path, start, end, ..
+        } => (path, *start, *end),
     };
-    let mut file = File::open(path)?;
+    let mut file = File::open(path).with_context(|| format!("can't open {}", path.display()))?;
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = vec![0u8; (end - start) as usize];
-    file.read_exact(&mut bytes)?;
+    file.read_exact(&mut bytes)
+        .with_context(|| format!("can't read {}", path.display()))?;
+    Ok(bytes)
+}
+
+/// The tensor's values as f32, whatever precision the file stores.
+pub fn read(source: &Source) -> Result<Vec<f32>> {
+    if let Source::Values(values) = source {
+        return Ok(values.clone());
+    }
+    let dtype = source.dtype();
+    let bytes = bytes(source)?;
     let count = bytes.len() / dtype.size();
     let data = TensorData::from_bytes_vec(bytes, [count], dtype).convert_dtype(DType::F32);
     data.try_to_vec::<f32>()

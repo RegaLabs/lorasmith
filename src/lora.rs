@@ -174,21 +174,6 @@ pub fn clip_grad_norm(
     Some(grads)
 }
 
-/// Moves the adapters of `trained` onto `base`, another copy of the same model without any.
-pub fn transplant(trained: &Llama, base: Llama) -> Llama {
-    let adapters = projections(trained);
-    let Some(lora) = adapters
-        .iter()
-        .find_map(|(_, layer)| layer.weight.adapter())
-    else {
-        return base;
-    };
-    let rank = lora.a.dims()[1];
-    let base = attach(base, rank, lora.scale * rank as f64);
-    let factors = factors(trained);
-    set_factors(base, |path, _| factors.get(path).cloned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

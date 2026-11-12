@@ -2,7 +2,6 @@
 
 mod model;
 mod sentencepiece;
-mod shards;
 mod vocab;
 
 pub use model::convert;

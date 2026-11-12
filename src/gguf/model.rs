@@ -5,9 +5,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::shards::{self, Source};
 use super::{Info, Kind, Value, vocab};
 use crate::config::Config;
+use crate::shards::{self, Source};
 
 /// Writes `model_dir` as a Q8_0 GGUF file at `out`, calling the model `name`.
 pub fn convert(model_dir: &Path, name: &str, out: &Path) -> Result<()> {
