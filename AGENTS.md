@@ -4,10 +4,10 @@ Rules for everyone who writes code here, human or AI. Short on purpose. Read it 
 
 ## What we're building
 
-loraforge fine-tunes an open LLM on your own data with one command, on the machine you already have.
+lorasmith fine-tunes an open LLM on your own data with one command, on the machine you already have.
 
 ```bash
-loraforge train qwen2.5:1.5b my-data.jsonl
+lorasmith train qwen2.5:1.5b my-data.jsonl
 ollama create my-data -f runs/my-data/Modelfile
 ollama run my-data
 ```
@@ -35,7 +35,7 @@ If it isn't in scope, open an issue before writing it. Saying no is how this sta
 
 ## Product rules
 
-- `loraforge train <model> <data>` works with nothing else. Every flag has a sane default.
+- `lorasmith train <model> <data>` works with nothing else. Every flag has a sane default.
 - Models: HF repo ids (`Qwen/Qwen2.5-1.5B-Instruct`) or short aliases (`qwen2.5:1.5b`).
 - Data: JSONL, format detected per file: `{"messages": [...]}`, `{"prompt": ..., "completion": ...}` or `{"text": ...}`. The chat template comes from the model's `tokenizer_config.json`.
 - Each run writes one folder with:
