@@ -12,7 +12,7 @@ ollama create my-data -f runs/my-data/Modelfile
 ollama run my-data
 ```
 
-> **Status:** version 0.1.0, early. Training, download and export work on real models, and the result runs in Ollama. It has been run on Linux only, on an NVIDIA Quadro M2200 (Vulkan), an Intel HD 630 and the CPU. Metal, DirectX 12 and AMD cards should work through wgpu but haven't been tried: [reports are welcome](CONTRIBUTING.md).
+> **Status:** early. Training, download and export work on real models, and the result runs in Ollama. Training has been run on Linux only, on an NVIDIA Quadro M2200 (Vulkan), an Intel HD 630 and the CPU; on macOS and Windows only the CPU tests have run, in CI. Metal, DirectX 12 and AMD cards should work through wgpu but haven't been tried: [reports are welcome](CONTRIBUTING.md).
 
 ## Why
 
@@ -34,7 +34,7 @@ cargo install --locked --git https://github.com/RegaLabs/lorasmith
 
 From a checkout, `cargo install --locked --path .` does the same. The gap closes when Burn 0.23 is released with the two fixes it needs ([tracel-ai/burn#6465](https://github.com/tracel-ai/burn/pull/6465) and [#6503](https://github.com/tracel-ai/burn/pull/6503)); until then `Cargo.toml` pins the Burn commit that has both. Either way the first build compiles Burn and takes several minutes.
 
-Every version tag also gets archives for Linux (x86_64, glibc 2.35 or newer), macOS (Apple Silicon and Intel) and Windows (x86_64), each holding the one `lorasmith` binary to unpack and put on your `PATH`. None is published yet.
+Every version tag also gets archives for Linux (x86_64, glibc 2.35 or newer), macOS (Apple Silicon and Intel) and Windows (x86_64), each holding the one `lorasmith` binary to unpack and put on your `PATH`. They are on the [releases page](https://github.com/RegaLabs/lorasmith/releases).
 
 Three optional cargo features: `cuda` and `rocm` train through NVIDIA's and AMD's own stacks instead of wgpu, and `autotune` benchmarks GPU kernels on first use, which is about 20% faster but needs more memory than a 4 GB GPU has to spare for a 0.5B model.
 
@@ -138,8 +138,8 @@ When memory runs out, lorasmith says so and suggests, in this order: `--qlora`, 
 
 ## Limits
 
-- Early software: version 0.1.0, no prebuilt binaries yet.
-- Run on Linux with two GPUs and the CPU so far. macOS and Windows build in CI on a release tag, which hasn't happened yet.
+- Early software, run by one person on one laptop so far.
+- Trained on Linux with two GPUs and the CPU so far. macOS and Windows pass the CPU tests in CI, and nobody has trained on them yet.
 - Built on a Burn that isn't released. A checkout pins the exact commit; the crates.io release uses the latest Burn pre-release and loses most of what `--qlora` saves.
 - A stopped run can't be resumed. Its last finished epoch is kept as an adapter in `checkpoint/`.
 - No inference server, chat UI, multi-GPU training, full fine-tuning or other architectures. That is on purpose: lorasmith trains, exports and gets out of the way.
