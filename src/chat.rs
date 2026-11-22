@@ -107,8 +107,15 @@ pub fn assistant_spans(text: &str, messages: &[Message], eos: &str) -> Result<Ve
             continue;
         }
         let content = message.content.trim();
-        let found = text[cursor..].find(content);
         let assistant = message.role == "assistant";
+        // An empty reply matches anywhere, so it would mark nothing, or the wrong turn's end token.
+        if assistant && content.is_empty() {
+            bail!(
+                "message {} is an empty reply; write the answer the model should give, or remove the turn",
+                i + 1
+            );
+        }
+        let found = text[cursor..].find(content);
         let start = match found {
             Some(offset) => cursor + offset,
             None if assistant => bail!(
@@ -217,6 +224,26 @@ mod tests {
         let spans = assistant_spans(&text, &messages, &template.eos).unwrap();
         let replies: Vec<&str> = spans.into_iter().map(|s| &text[s]).collect();
         assert_eq!(replies, ["Hello!\n<|im_end|>"]);
+    }
+
+    #[test]
+    fn an_empty_reply_is_an_error() {
+        let text = "<|im_start|>user
+Hi<|im_end|>
+<|im_start|>assistant
+<|im_end|>
+";
+        for reply in [
+            "", " 
+",
+        ] {
+            let messages = chat(&[("user", "Hi"), ("assistant", reply)]);
+            let error = assistant_spans(text, &messages, "<|im_end|>").unwrap_err();
+            assert!(
+                error.to_string().contains("message 2 is an empty reply"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
