@@ -40,8 +40,8 @@ struct TrainArgs {
     /// Examples per step. At least 1.
     #[arg(long, default_value_t = Options::default().batch_size, value_parser = at_least(1))]
     batch_size: usize,
-    /// LoRA rank. Higher learns more and uses more memory.
-    #[arg(long, default_value_t = Options::default().rank)]
+    /// LoRA rank. Higher learns more and uses more memory. At least 1.
+    #[arg(long, default_value_t = Options::default().rank, value_parser = at_least(1))]
     rank: usize,
     /// Longer examples are cut to this many tokens. At least 2, since each token learns
     /// to predict the next one.
@@ -273,9 +273,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_batch_size_zero_and_max_len_below_two() {
+    fn rejects_sizes_that_cannot_train() {
         assert!(parse(&["--batch-size", "0"]).is_err());
         assert!(parse(&["--max-len", "1"]).is_err());
-        assert!(parse(&["--batch-size", "1", "--max-len", "2"]).is_ok());
+        assert!(parse(&["--rank", "0"]).is_err());
+        assert!(parse(&["--batch-size", "1", "--max-len", "2", "--rank", "1"]).is_ok());
     }
 }
