@@ -72,6 +72,7 @@ fn train(args: TrainArgs) -> Result<()> {
         device::best()
     };
     let model = hub::fetch(&args.model, terminal, |config| {
+        config.check_max_len(args.max_len)?;
         let size = config.parameters();
         println!(
             "Model   {} ({:.2}B parameters)",

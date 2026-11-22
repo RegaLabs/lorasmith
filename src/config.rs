@@ -73,6 +73,18 @@ impl Config {
         Ok(())
     }
 
+    /// Fails when examples of `max_len` tokens would not fit the model's context.
+    pub fn check_max_len(&self, max_len: usize) -> Result<()> {
+        let context = self.max_position_embeddings;
+        if max_len > context {
+            bail!(
+                "--max-len {max_len} is longer than this model's context of {context} tokens. \
+                 Use --max-len {context} or less."
+            );
+        }
+        Ok(())
+    }
+
     fn rope(&self) -> Option<&RopeParameters> {
         self.rope_parameters.as_ref().or(self.rope_scaling.as_ref())
     }
@@ -205,5 +217,13 @@ mod tests {
         config.model_type = "gemma2".to_string();
         let message = config.check().unwrap_err().to_string();
         assert!(message.contains("gemma2") && message.contains("Try"));
+    }
+
+    #[test]
+    fn refuses_max_len_beyond_the_context_with_the_limit() {
+        let config = tiny("llama");
+        assert!(config.check_max_len(128).is_ok());
+        let message = config.check_max_len(129).unwrap_err().to_string();
+        assert!(message.contains("--max-len 128 or less"), "{message}");
     }
 }
