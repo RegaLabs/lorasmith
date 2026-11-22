@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use burn::store::{
@@ -13,8 +13,8 @@ use burn::tensor::{Device, FloatDType};
 use crate::config::Config;
 use crate::model::Llama;
 
-/// Reads `config.json` and every `*.safetensors` shard in `dir` into a ready model whose
-/// weights are stored, and so computed with, as `dtype`.
+/// Reads `config.json` and the weight files Hugging Face would load from `dir` into a ready
+/// model whose weights are stored, and so computed with, as `dtype`.
 pub fn model(dir: &Path, device: &Device, dtype: FloatDType) -> Result<(Config, Llama)> {
     let path = dir.join("config.json");
     let json =
@@ -30,7 +30,7 @@ pub fn model(dir: &Path, device: &Device, dtype: FloatDType) -> Result<(Config, 
 pub fn weights(model: &mut Llama, dir: &Path, dtype: FloatDType) -> Result<()> {
     let mut applied = BTreeSet::new();
     let mut missing = BTreeSet::new();
-    for shard in shards(dir)? {
+    for shard in crate::shards::weight_files(dir)? {
         // Checkpoints usually ship in bf16, which WGSL GPUs can't compute in.
         let mut store = SafetensorsStore::from_file(&shard)
             .with_from_adapter(PyTorchToBurnAdapter.chain(FloatCastAdapter::to(dtype.into())))
@@ -55,19 +55,6 @@ pub fn weights(model: &mut Llama, dir: &Path, dtype: FloatDType) -> Result<()> {
         );
     }
     Ok(())
-}
-
-fn shards(dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut shards: Vec<PathBuf> = fs::read_dir(dir)
-        .with_context(|| format!("can't open {}", dir.display()))?
-        .filter_map(|entry| Some(entry.ok()?.path()))
-        .filter(|path| path.extension().is_some_and(|ext| ext == "safetensors"))
-        .collect();
-    if shards.is_empty() {
-        bail!("no .safetensors files in {}", dir.display());
-    }
-    shards.sort();
-    Ok(shards)
 }
 
 #[cfg(test)]
@@ -135,6 +122,6 @@ mod tests {
         let mut model = Llama::new(&tiny("llama"), &Device::flex());
         let error = weights(&mut model, &dir, FloatDType::F32).unwrap_err();
         fs::remove_dir_all(&dir).unwrap();
-        assert!(error.to_string().contains("no .safetensors"));
+        assert!(error.to_string().contains("no model.safetensors"));
     }
 }

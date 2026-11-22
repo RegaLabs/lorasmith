@@ -44,15 +44,56 @@ pub fn dtype_name(dtype: DType) -> Option<&'static str> {
         .map(|(name, _)| *name)
 }
 
-/// Every tensor in the folder's `.safetensors` files, read from their headers only.
-pub fn tensors(dir: &Path) -> Result<Vec<(String, Vec<usize>, Source)>> {
-    let mut shards: Vec<PathBuf> = std::fs::read_dir(dir)?
-        .filter_map(|e| Some(e.ok()?.path()))
-        .filter(|p| p.extension().is_some_and(|e| e == "safetensors"))
+/// The weight files Hugging Face loads from `dir`: `model.safetensors`, or else the shards
+/// its index lists. Other `.safetensors` files, such as Mistral's `consolidated.safetensors`
+/// or a PEFT adapter, are not part of the model.
+pub fn weight_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    const INDEX: &str = "model.safetensors.index.json";
+    let single = dir.join("model.safetensors");
+    if single.exists() {
+        return Ok(vec![single]);
+    }
+    let index_path = dir.join(INDEX);
+    if !index_path.exists() {
+        bail!(
+            "{} has no model.safetensors or {INDEX}; point lorasmith at a Hugging Face model              folder, or pass the repo id instead",
+            dir.display()
+        );
+    }
+    let broken = || {
+        format!(
+            "{} has a broken {INDEX}; download the model again",
+            dir.display()
+        )
+    };
+    let index: Json =
+        serde_json::from_str(&std::fs::read_to_string(&index_path)?).with_context(broken)?;
+    let mut shards: Vec<&str> = index["weight_map"]
+        .as_object()
+        .with_context(broken)?
+        .values()
+        .filter_map(Json::as_str)
         .collect();
     shards.sort();
+    shards.dedup();
+    let mut files = Vec::new();
+    for shard in shards {
+        let path = dir.join(shard);
+        if !path.exists() {
+            bail!(
+                "{} is missing {shard}, which {INDEX} lists; download the model again",
+                dir.display()
+            );
+        }
+        files.push(path);
+    }
+    Ok(files)
+}
+
+/// Every tensor in the folder's weight files, read from their headers only.
+pub fn tensors(dir: &Path) -> Result<Vec<(String, Vec<usize>, Source)>> {
     let mut tensors = Vec::new();
-    for path in shards {
+    for path in weight_files(dir)? {
         let mut file =
             File::open(&path).with_context(|| format!("can't open {}", path.display()))?;
         let mut len = [0u8; 8];
@@ -128,4 +169,74 @@ pub fn read(source: &Source) -> Result<Vec<f32>> {
     let data = TensorData::from_bytes_vec(bytes, [count], dtype).convert_dtype(DType::F32);
     data.try_to_vec::<f32>()
         .map_err(|e| anyhow::anyhow!("{e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: &str = "tests/fixtures/llama";
+
+    fn names(dir: &Path) -> Vec<String> {
+        tensors(dir).unwrap().into_iter().map(|t| t.0).collect()
+    }
+
+    fn folder(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lorasmith-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn copy_weights(dir: &Path, name: &str) {
+        std::fs::copy(Path::new(BASE).join("model.safetensors"), dir.join(name)).unwrap();
+    }
+
+    #[test]
+    fn ignores_other_safetensors_next_to_the_model() {
+        let dir = folder("stray-weights");
+        for name in [
+            "model.safetensors",
+            "consolidated.safetensors",
+            "adapter_model.safetensors",
+        ] {
+            copy_weights(&dir, name);
+        }
+        let found = names(&dir);
+        let files = weight_files(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, names(Path::new(BASE)));
+        assert_eq!(files, vec![dir.join("model.safetensors")]);
+    }
+
+    #[test]
+    fn reads_only_the_shards_the_index_lists() {
+        let dir = folder("sharded");
+        copy_weights(&dir, "model-00001-of-00001.safetensors");
+        copy_weights(&dir, "consolidated.safetensors");
+        let shard = "model-00001-of-00001.safetensors";
+        let index = serde_json::json!({ "weight_map": { "a": shard, "b": shard } });
+        std::fs::write(dir.join("model.safetensors.index.json"), index.to_string()).unwrap();
+        let found = names(&dir);
+        let files = weight_files(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, names(Path::new(BASE)));
+        assert_eq!(files, vec![dir.join(shard)]);
+    }
+
+    #[test]
+    fn refuses_an_index_whose_shard_is_missing() {
+        let dir = folder("missing-shard");
+        copy_weights(&dir, "consolidated.safetensors");
+        let index =
+            serde_json::json!({ "weight_map": { "a": "model-00001-of-00002.safetensors" } });
+        std::fs::write(dir.join("model.safetensors.index.json"), index.to_string()).unwrap();
+        let error = tensors(&dir).err().map(|e| e.to_string());
+        std::fs::remove_dir_all(&dir).unwrap();
+        let error = error.expect("a missing shard must fail");
+        assert!(
+            error.contains("model-00001-of-00002.safetensors"),
+            "{error}"
+        );
+        assert!(error.contains("download"), "{error}");
+    }
 }
