@@ -65,6 +65,7 @@ pub fn fetch(
     let token = std::env::var("HF_TOKEN")
         .ok()
         .or_else(|| Cache::from_env().token());
+    let has_token = token.is_some();
     let api = ApiBuilder::from_env()
         .with_progress(progress)
         .with_token(token)
@@ -75,7 +76,7 @@ pub fn fetch(
         Ok(info) => info.siblings.into_iter().map(|s| s.rfilename).collect(),
         Err(error) => return cached(id, error, on_config),
     };
-    download(id, &repo, &files, on_config)
+    download(id, &repo, &files, has_token, on_config)
 }
 
 fn resolve(name: &str) -> Result<&str> {
@@ -97,12 +98,13 @@ fn download(
     id: &str,
     repo: &ApiRepo,
     files: &[String],
+    has_token: bool,
     on_config: impl FnOnce(&Config) -> Result<()>,
 ) -> Result<Model> {
     let get = |file: &str| {
         repo.get(file).map_err(|error| {
             let (status, cause) = http_status(error);
-            anyhow::anyhow!(download_hint(id, file, status, &cause))
+            anyhow::anyhow!(download_hint(id, file, status, has_token, &cause))
         })
     };
     let config_path = get("config.json")?;
@@ -145,14 +147,30 @@ fn http_status(error: ApiError) -> (Option<u16>, String) {
     }
 }
 
-/// What to tell the user when `file` can't be downloaded from `id`.
-fn download_hint(id: &str, file: &str, status: Option<u16>, cause: &str) -> String {
+/// What to tell the user when `file` can't be downloaded from `id`. `has_token` says whether
+/// a token was sent: Hugging Face answers 401 to a gated download both without one and with
+/// one it doesn't accept, and telling someone who set HF_TOKEN to set it doesn't help.
+fn download_hint(
+    id: &str,
+    file: &str,
+    status: Option<u16>,
+    has_token: bool,
+    cause: &str,
+) -> String {
+    let license = format!("https://huggingface.co/{id}");
+    let tokens = "https://huggingface.co/settings/tokens";
     match status {
-        Some(401 | 403) => format!(
-            "{id} is gated, so Hugging Face won't send {file} ({cause}).\n\
-             Accept its license at https://huggingface.co/{id}, create a read token at \
-             https://huggingface.co/settings/tokens, set HF_TOKEN to it and run again. \
-             Or pick an ungated model such as qwen2.5:1.5b"
+        Some(401) if has_token => format!(
+            "Hugging Face didn't accept your token for {id}, so it won't send {file} ({cause}).
+             Check that HF_TOKEN holds a current read token from {tokens}, and that you accepted              the license at {license}. Or pick an ungated model such as qwen2.5:1.5b"
+        ),
+        Some(401) => format!(
+            "{id} is gated, so Hugging Face won't send {file} ({cause}).
+             Accept its license at {license}, create a read token at {tokens}, set HF_TOKEN to              it and run again. Or pick an ungated model such as qwen2.5:1.5b"
+        ),
+        Some(403) => format!(
+            "your token has no access to {id} yet, so Hugging Face won't send {file} ({cause}).
+             Accept its license at {license} and wait for approval if it asks for one. A              fine-grained token also needs read access to public gated repos. Or pick an              ungated model such as qwen2.5:1.5b"
         ),
         _ => format!(
             "can't download {file} from {id} ({cause}); check your connection and try again"
@@ -251,10 +269,9 @@ mod tests {
     #[test]
     fn a_refused_download_says_how_to_get_access() {
         let id = "meta-llama/Llama-3.2-1B-Instruct";
-        for status in [401, 403] {
-            let hint = download_hint(id, "config.json", Some(status), "status code");
-            assert!(hint.contains("gated"), "{hint}");
-            assert!(hint.contains("HF_TOKEN"), "{hint}");
+        let hint = |status, has_token| download_hint(id, "config.json", status, has_token, "x");
+        for (status, has_token) in [(401, false), (401, true), (403, true)] {
+            let hint = hint(Some(status), has_token);
             assert!(
                 hint.contains(&format!("https://huggingface.co/{id}")),
                 "{hint}"
@@ -262,9 +279,11 @@ mod tests {
             assert!(hint.contains("qwen2.5:1.5b"), "{hint}");
             assert!(!hint.contains("connection"), "{hint}");
         }
+        assert!(hint(Some(401), false).contains("set HF_TOKEN"));
+        assert!(hint(Some(401), true).contains("didn't accept your token"));
+        assert!(hint(Some(403), true).contains("no access"));
         for status in [None, Some(500)] {
-            let hint = download_hint(id, "config.json", status, "timed out");
-            assert!(hint.contains("check your connection"), "{hint}");
+            assert!(hint(status, true).contains("check your connection"));
         }
     }
 
