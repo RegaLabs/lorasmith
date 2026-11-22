@@ -27,6 +27,11 @@ merged.
 You need [Rust](https://rustup.rs) 1.95 or newer. No GPU and no downloads are needed for the
 tests: they run on a tiny random model on the CPU and take seconds once the build is done.
 
+On Windows, Rust also needs Microsoft's C++ build tools for linking. The README's
+[On Windows](README.md#on-windows) section has the two `winget` commands; open a new terminal
+afterwards so `cargo` is on your `PATH`. The commands below are the same in PowerShell, but
+PowerShell 5.1 has no `&&`, so run them one at a time or join them with `;`.
+
 ```bash
 cargo fmt
 cargo clippy --all-targets -- -D warnings

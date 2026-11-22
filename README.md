@@ -34,6 +34,8 @@ cargo install --locked --git https://github.com/RegaLabs/lorasmith
 
 From a checkout, `cargo install --locked --path .` does the same. The gap closes when Burn 0.23 is released with the two fixes it needs ([tracel-ai/burn#6465](https://github.com/tracel-ai/burn/pull/6465) and [#6503](https://github.com/tracel-ai/burn/pull/6503)); until then `Cargo.toml` pins the Burn commit that has both. Either way the first build compiles Burn and takes several minutes.
 
+On Windows, Rust links with Microsoft's C++ build tools, so install those once before the first `cargo install`. [On Windows](#on-windows) has the commands.
+
 Every version tag also gets archives for Linux (x86_64, glibc 2.35 or newer), macOS (Apple Silicon and Intel) and Windows (x86_64), each holding the one `lorasmith` binary to unpack and put on your `PATH`. They are on the [releases page](https://github.com/RegaLabs/lorasmith/releases).
 
 Three optional cargo features: `cuda` and `rocm` train through NVIDIA's and AMD's own stacks instead of wgpu, and `autotune` benchmarks GPU kernels on first use, which is about 20% faster but needs more memory than a 4 GB GPU has to spare for a 0.5B model.
@@ -73,14 +75,14 @@ Every flag has a default, so `lorasmith train <model> <data>` is enough.
 |---|---|---|
 | `--out <dir>` | `runs/<data file name>` | Where the results go. The default never overwrites an earlier run: the next one gets `-2`, `-3` and so on. |
 | `--epochs <n>` | 3 to 10 | Passes over the data. By default small datasets get extra passes, so the adapter has about 75 steps to learn from. |
-| `--batch-size <n>` | 4 | Examples per step. Lower it when memory runs out. |
-| `--max-len <n>` | 1024 | Longer examples are cut to this many tokens. |
+| `--batch-size <n>` | 4 | Examples per step, at least 1. Lower it when memory runs out. |
+| `--max-len <n>` | 1024 | Longer examples are cut to this many tokens. At least 2, and no more than the model's context or its sliding attention window; that is checked before anything downloads. |
 | `--learning-rate <x>` | 0.0002 | The usual LoRA value. |
-| `--rank <n>` | 16 | LoRA rank. Higher learns more and uses more memory. Alpha is twice the rank. |
+| `--rank <n>` | 16 | LoRA rank, at least 1. Higher learns more and uses more memory. Alpha is twice the rank. |
 | `--qlora` | off | Holds the model in 4 bits while training. Needs far less GPU memory; the merged model is still built on the full weights. |
 | `--cpu` | off | Trains on the CPU even when a GPU works. |
 
-With several GPUs, `CUBECL_WGPU_DEFAULT_DEVICE='IntegratedGpu(0)'` or `'DiscreteGpu(1)'` picks one; `lorasmith devices` lists them.
+With several GPUs, `CUBECL_WGPU_DEFAULT_DEVICE='IntegratedGpu(0)'` or `'DiscreteGpu(1)'` picks one (in PowerShell, `$env:CUBECL_WGPU_DEFAULT_DEVICE = 'DiscreteGpu(1)'`); `lorasmith devices` lists them.
 
 ### Models
 
@@ -88,7 +90,9 @@ Llama, Mistral, Qwen2 and Qwen3, and their fine-tunes such as SmolLM. Give a Hug
 
 `smollm2:135m`, `smollm2:360m`, `smollm2:1.7b`, `qwen2.5:0.5b`, `qwen2.5:1.5b`, `qwen2.5:3b`, `qwen2.5:7b`, `qwen3:0.6b`, `qwen3:1.7b`, `qwen3:4b`, `qwen3:8b`, `llama3.2:1b`, `llama3.2:3b`, `mistral:7b`
 
-Llama and Mistral are gated: accept their license on Hugging Face and set `HF_TOKEN`.
+Llama and Mistral are gated: accept their license on the model's Hugging Face page, create a read token at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) and put it in `HF_TOKEN` (`export HF_TOKEN=hf_...`, or `$env:HF_TOKEN = 'hf_...'` in PowerShell). If the download is refused, lorasmith says whether the token is missing, wasn't accepted, or doesn't have access yet.
+
+A local folder needs the files Hugging Face itself loads: `config.json`, `tokenizer.json`, `tokenizer_config.json`, and `model.safetensors` or the shards listed in `model.safetensors.index.json`. Other `.safetensors` files in the folder, such as Mistral's `consolidated.safetensors` or an old adapter, are ignored.
 
 ### Data
 
@@ -100,7 +104,9 @@ Each line of the data file is one example, in one of three shapes. The shape is 
 {"text": "Plain text to continue."}
 ```
 
-Conversations use the model's own chat template, and only the assistant's replies are learned. Training matches Hugging Face PEFT step for step, so the usual LoRA settings carry over.
+The file must be UTF-8. A byte-order mark at the start is fine; UTF-16, which Windows PowerShell 5.1 writes by default, is refused before the model downloads, with the command to convert it.
+
+Conversations use the model's own chat template, and only the assistant's replies are learned, each with the token that ends its turn, so the model learns to stop. An empty assistant reply is an error, since there would be nothing to learn from it. Training matches Hugging Face PEFT step for step, so the usual LoRA settings carry over.
 
 With 20 or more examples, a tenth is held out: training prints the loss on them after every epoch and keeps the adapter from the epoch that did best. If training stops early, `runs/<data name>/checkpoint/` holds the adapter from the last finished epoch.
 
@@ -114,6 +120,27 @@ With 20 or more examples, a tenth is held out: training prints the loss on them 
 - `Modelfile`: points Ollama at `model.gguf`.
 
 GGUF export covers byte-level BPE tokenizers (Llama 3, Qwen, SmolLM) and SentencePiece ones whose repo has a `tokenizer.model` file (Mistral, Llama 2). For any other tokenizer the Modelfile points at `merged/`, which Ollama runs only on Apple Silicon and NVIDIA RTX 20 series or newer.
+
+## On Windows
+
+Install Rust and the C++ build tools it links with, from PowerShell:
+
+```powershell
+winget install --id Rustlang.Rustup -e
+winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+Open a new terminal so `cargo` is on your `PATH`, then `cargo install` as above. The release archive needs neither: unpack `lorasmith.exe` and put its folder on your `PATH`.
+
+The commands in this README work the same in PowerShell, and Ollama takes Windows paths: `ollama create pirate -f runs\pirate\Modelfile`. GPU training goes through wgpu, which uses the Vulkan or DirectX 12 driver.
+
+Save data files as UTF-8. In Notepad that is the default; in Windows PowerShell 5.1, `>` and `Out-File` write UTF-16, so write files with `Set-Content -Encoding utf8` or convert one that lorasmith refuses:
+
+```powershell
+Get-Content my-data.jsonl | Set-Content -Encoding utf8 my-data-utf8.jsonl
+```
+
+PowerShell 7 writes UTF-8 by default. Set environment variables for the session with `$env:HF_TOKEN = 'hf_...'`, or for every new terminal with `setx HF_TOKEN hf_...`.
 
 ## Memory and speed
 
