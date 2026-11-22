@@ -96,6 +96,8 @@ pub fn tokenizer_config(model_dir: &Path) -> Result<Value> {
 /// render earlier turns differently once later ones exist. Finding each message in order works
 /// for every template that copies replies through unchanged, which is all the ones we support.
 /// Other turns are only stepped over, so a reply that repeats an earlier question isn't mistaken for it.
+/// Replies are matched trimmed because Llama 3 and Mistral strip them; whitespace a template kept,
+/// as ChatML does, is stepped over so the end-of-turn token is still learned.
 pub fn assistant_spans(text: &str, messages: &[Message], eos: &str) -> Result<Vec<Range<usize>>> {
     let mut spans = Vec::new();
     let mut cursor = 0;
@@ -117,8 +119,10 @@ pub fn assistant_spans(text: &str, messages: &[Message], eos: &str) -> Result<Ve
             None => continue,
         };
         let mut end = start + content.len();
-        if text[end..].starts_with(eos) {
-            end += eos.len();
+        let rest = &text[end..];
+        let gap = rest.len() - rest.trim_start().len();
+        if rest[gap..].starts_with(eos) {
+            end += gap + eos.len();
         }
         if assistant {
             spans.push(start..end);
@@ -201,6 +205,18 @@ mod tests {
         let spans = assistant_spans(text, &messages, "</s>").unwrap();
         let replies: Vec<&str> = spans.into_iter().map(|s| &text[s]).collect();
         assert_eq!(replies, ["Yes</s>", "Sure</s>"]);
+    }
+
+    #[test]
+    fn trailing_whitespace_in_a_reply_keeps_the_end_token() {
+        let dir = Path::new(SMOLLM2);
+        let config = tokenizer_config(dir).unwrap();
+        let template = Template::load(dir, &config).unwrap().unwrap();
+        let messages = chat(&[("user", "Hi"), ("assistant", "Hello!\n")]);
+        let text = template.render(&messages).unwrap();
+        let spans = assistant_spans(&text, &messages, &template.eos).unwrap();
+        let replies: Vec<&str> = spans.into_iter().map(|s| &text[s]).collect();
+        assert_eq!(replies, ["Hello!\n<|im_end|>"]);
     }
 
     #[test]
