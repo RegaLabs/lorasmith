@@ -189,15 +189,30 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    #[test]
-    fn weights_stay_in_the_precision_they_were_published_in() {
-        let published = temp("merge-bf16");
+    /// A folder holding a tiny random Llama published in bf16.
+    fn bf16_model(name: &str) -> PathBuf {
+        let published = temp(name);
         let mut store = SafetensorsStore::from_file(published.join("model.safetensors"))
             .with_to_adapter(BurnToPyTorchAdapter.chain(FloatCastAdapter::to(DType::BF16)))
             .with_key_remapping(r"^(embed_tokens|layers|norm)", "model.$1");
         Llama::new(&tiny("llama"), &Device::flex())
             .save_into(&mut store)
             .unwrap();
+        published
+    }
+
+    fn round_to_bf16(values: Vec<f32>) -> Vec<f32> {
+        let len = values.len();
+        TensorData::new(values, [len])
+            .convert_dtype(DType::BF16)
+            .convert_dtype(DType::F32)
+            .try_into_vec()
+            .unwrap()
+    }
+
+    #[test]
+    fn weights_stay_in_the_precision_they_were_published_in() {
+        let published = bf16_model("merge-bf16");
         let dir = temp("merge-bf16-out");
         write(
             &update(&published, DOWN_PROJ),
@@ -219,6 +234,41 @@ mod tests {
                 }
             }
         }
+        std::fs::remove_dir_all(&published).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // PEFT adds an f32 delta to the bf16 weight and rounds once. Rounding the delta to
+    // bf16 first would shift some merged weights by an ulp.
+    #[test]
+    fn a_bf16_merge_rounds_once() {
+        let published = bf16_model("merge-round");
+        let mut updates = update(&published, DOWN_PROJ);
+        let down = updates.get_mut(DOWN_PROJ).unwrap();
+        let delta = 0.0123457_f32;
+        down.a = Tensor::full(down.a.dims(), delta, &Device::flex());
+        down.scale = 1.0;
+        let dir = temp("merge-round-out");
+        write(&updates, &published, &dir.join("model.safetensors")).unwrap();
+
+        let find = |tensors: &[(String, Vec<usize>, Source)]| {
+            let (_, _, source) = tensors.iter().find(|(n, ..)| key(n) == DOWN_PROJ).unwrap();
+            shards::read(source).unwrap()
+        };
+        let before = find(&shards::tensors(&published).unwrap());
+        let after = find(&shards::tensors(&dir).unwrap());
+        let once = round_to_bf16(before.iter().map(|v| v + delta).collect());
+        let rounded_delta = round_to_bf16(vec![delta])[0];
+        let twice = round_to_bf16(before.iter().map(|v| v + rounded_delta).collect());
+        let bits = |values: &[f32]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert!(
+            bits(&once) != bits(&twice),
+            "the delta must tell the two apart"
+        );
+        assert!(
+            bits(&after) == bits(&once),
+            "the merge rounded more than once"
+        );
         std::fs::remove_dir_all(&published).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
