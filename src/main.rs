@@ -37,13 +37,15 @@ struct TrainArgs {
     epochs: Option<usize>,
     #[arg(long, default_value_t = Options::default().learning_rate)]
     learning_rate: f64,
-    #[arg(long, default_value_t = Options::default().batch_size)]
+    /// Examples per step. At least 1.
+    #[arg(long, default_value_t = Options::default().batch_size, value_parser = at_least(1))]
     batch_size: usize,
     /// LoRA rank. Higher learns more and uses more memory.
     #[arg(long, default_value_t = Options::default().rank)]
     rank: usize,
-    /// Longer examples are cut to this many tokens.
-    #[arg(long, default_value_t = 1024)]
+    /// Longer examples are cut to this many tokens. At least 2, since each token learns
+    /// to predict the next one.
+    #[arg(long, default_value_t = 1024, value_parser = at_least(2))]
     max_len: usize,
     /// Train on the CPU even when a GPU works.
     #[arg(long)]
@@ -52,6 +54,14 @@ struct TrainArgs {
     /// exactness; the merged model is still built on the full weights.
     #[arg(long)]
     qlora: bool,
+}
+
+/// Parses a whole number no smaller than `min`. Clap puts the flag name in front of the error.
+fn at_least(min: usize) -> impl Fn(&str) -> Result<usize, String> + Clone + Send + Sync {
+    move |text| match text.parse::<usize>() {
+        Ok(n) if n >= min => Ok(n),
+        _ => Err(format!("use a whole number of {min} or more")),
+    }
 }
 
 fn main() -> Result<()> {
@@ -250,4 +260,21 @@ fn devices() {
     println!(
         "Pick another GPU with CUBECL_WGPU_DEFAULT_DEVICE=IntegratedGpu(0) or DiscreteGpu(1)."
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(extra: &[&str]) -> Result<Cli, clap::Error> {
+        let args = ["lorasmith", "train", "qwen2.5:0.5b", "data.jsonl"];
+        Cli::try_parse_from(args.iter().chain(extra))
+    }
+
+    #[test]
+    fn rejects_batch_size_zero_and_max_len_below_two() {
+        assert!(parse(&["--batch-size", "0"]).is_err());
+        assert!(parse(&["--max-len", "1"]).is_err());
+        assert!(parse(&["--batch-size", "1", "--max-len", "2"]).is_ok());
+    }
 }
