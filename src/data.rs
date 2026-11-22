@@ -26,8 +26,7 @@ pub struct Dataset {
 
 /// Reads `path` and tokenizes every line for the model in `model_dir`, keeping at most `max_len` tokens each.
 pub fn load(path: &Path, model_dir: &Path, max_len: usize) -> Result<Dataset> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("can't read {}; check the path", path.display()))?;
+    let text = read_text(path)?;
     let encoder = Encoder::load(model_dir)?;
     let mut first: Option<(Format, usize)> = None;
     let mut dataset = Dataset::default();
@@ -73,6 +72,26 @@ pub fn load(path: &Path, model_dir: &Path, max_len: usize) -> Result<Dataset> {
         );
     }
     Ok(dataset)
+}
+
+fn read_text(path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("can't read {}; check the path", path.display()))?;
+    let resave = format!(
+        "save it as UTF-8 (Notepad: File > Save As > Encoding UTF-8; PowerShell: \
+         Get-Content {0} | Set-Content -Encoding utf8 fixed.jsonl)",
+        path.display()
+    );
+    if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+        bail!("{} is saved as UTF-16; {resave}", path.display());
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| anyhow::anyhow!("{} isn't UTF-8 text; {resave}", path.display()))?;
+    // Notepad and PowerShell 5.1 often start UTF-8 files with a byte-order mark, which JSON parsers reject.
+    Ok(match text.strip_prefix('\u{feff}') {
+        Some(rest) => rest.to_string(),
+        None => text,
+    })
 }
 
 #[cfg(test)]
@@ -158,6 +177,27 @@ mod tests {
         assert_eq!(dataset.examples.len(), 1);
         assert_eq!(dataset.examples[0].tokens.len(), 32);
         assert_eq!((dataset.truncated, dataset.skipped), (2, 1));
+    }
+
+    #[test]
+    fn a_utf8_byte_order_mark_is_ignored() {
+        let path = jsonl("bom", &["\u{feff}{\"text\": \"a\"}", r#"{"text": "b"}"#]);
+        let dataset = load(&path, Path::new(SMOLLM2), 512).unwrap();
+        assert_eq!(dataset.examples.len(), 2);
+    }
+
+    #[test]
+    fn utf16_files_get_re_save_advice() {
+        let path = jsonl("utf16", &[]);
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend(r#"{"text": "a"}"#.encode_utf16().flat_map(u16::to_le_bytes));
+        std::fs::write(&path, bytes).unwrap();
+        let message = error(&path);
+        assert!(
+            message.contains("saved as UTF-16; save it as UTF-8"),
+            "{message}"
+        );
+        assert!(!message.contains("check the path"), "{message}");
     }
 
     #[test]
