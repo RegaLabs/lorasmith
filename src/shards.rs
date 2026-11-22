@@ -56,7 +56,8 @@ pub fn weight_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let index_path = dir.join(INDEX);
     if !index_path.exists() {
         bail!(
-            "{} has no model.safetensors or {INDEX}; point lorasmith at a Hugging Face model              folder, or pass the repo id instead",
+            "{} has no model.safetensors or {INDEX}; point lorasmith at a Hugging Face model \
+             folder, or pass the repo id instead",
             dir.display()
         );
     }
@@ -66,8 +67,13 @@ pub fn weight_files(dir: &Path) -> Result<Vec<PathBuf>> {
             dir.display()
         )
     };
-    let index: Json =
-        serde_json::from_str(&std::fs::read_to_string(&index_path)?).with_context(broken)?;
+    let text = std::fs::read_to_string(&index_path).with_context(|| {
+        format!(
+            "can't read {}; check its permissions or download the model again",
+            index_path.display()
+        )
+    })?;
+    let index: Json = serde_json::from_str(&text).with_context(broken)?;
     let mut shards: Vec<&str> = index["weight_map"]
         .as_object()
         .with_context(broken)?
@@ -237,6 +243,26 @@ mod tests {
             error.contains("model-00001-of-00002.safetensors"),
             "{error}"
         );
+        assert!(error.contains("download"), "{error}");
+    }
+
+    #[test]
+    fn says_a_folder_without_weights_is_not_a_model_folder() {
+        let dir = folder("no-weights");
+        let error = weight_files(&dir).err().map(|e| e.to_string());
+        std::fs::remove_dir_all(&dir).unwrap();
+        let error = error.expect("a folder without weights must fail");
+        assert!(error.contains("Hugging Face model folder"), "{error}");
+    }
+
+    #[test]
+    fn names_the_index_when_it_cannot_be_read() {
+        let dir = folder("unreadable-index");
+        std::fs::create_dir_all(dir.join("model.safetensors.index.json")).unwrap();
+        let error = weight_files(&dir).err().map(|e| format!("{e:#}"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let error = error.expect("an unreadable index must fail");
+        assert!(error.contains("model.safetensors.index.json"), "{error}");
         assert!(error.contains("download"), "{error}");
     }
 }
