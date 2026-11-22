@@ -110,7 +110,11 @@ mod tests {
     }
 
     fn trained_text(example: &Example) -> String {
-        let tokenizer = Tokenizer::from_file(Path::new(SMOLLM2).join("tokenizer.json")).unwrap();
+        trained_text_in(SMOLLM2, example)
+    }
+
+    fn trained_text_in(model_dir: &str, example: &Example) -> String {
+        let tokenizer = Tokenizer::from_file(Path::new(model_dir).join("tokenizer.json")).unwrap();
         let ids: Vec<u32> = example
             .tokens
             .iter()
@@ -136,6 +140,34 @@ mod tests {
         assert_eq!(
             trained_text(&dataset.examples[0]),
             "Hello!<|im_end|>See you<|im_end|>"
+        );
+    }
+
+    // Spans are byte ranges, so they only line up if the tokenizer reports byte offsets too.
+    #[test]
+    fn non_ascii_conversations_train_on_the_reply_only() {
+        let line = concat!(
+            r#"{"messages": [{"role": "user", "content": "Grüße, 日本語?"}, "#,
+            r#"{"role": "assistant", "content": "こんにちは 🌍 café"}]}"#,
+        );
+        let path = jsonl("non-ascii-messages", &[line]);
+        let dataset = load(&path, Path::new(SMOLLM2), 512).unwrap();
+        assert_eq!(
+            trained_text(&dataset.examples[0]),
+            "こんにちは 🌍 café<|im_end|>"
+        );
+    }
+
+    #[test]
+    fn non_ascii_base_model_prompts_train_on_the_completion_only() {
+        let base_model = "tests/fixtures/sentencepiece";
+        let line = r#"{"prompt": "Grüße, 日本語?", "completion": " こんにちは 🌍 café"}"#;
+        let path = jsonl("non-ascii-pc", &[line]);
+        let dataset = load(&path, Path::new(base_model), 512).unwrap();
+        // The sentencepiece decoder drops the leading space of whatever it decodes first.
+        assert_eq!(
+            trained_text_in(base_model, &dataset.examples[0]),
+            "こんにちは 🌍 café</s>"
         );
     }
 
