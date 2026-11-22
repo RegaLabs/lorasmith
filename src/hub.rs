@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use hf_hub::Cache;
-use hf_hub::api::sync::{ApiBuilder, ApiRepo};
+use hf_hub::api::sync::{ApiBuilder, ApiError, ApiRepo};
 
 use crate::config::Config;
 
@@ -100,8 +100,9 @@ fn download(
     on_config: impl FnOnce(&Config) -> Result<()>,
 ) -> Result<Model> {
     let get = |file: &str| {
-        repo.get(file).with_context(|| {
-            format!("can't download {file} from {id}; check your connection and try again")
+        repo.get(file).map_err(|error| {
+            let (status, cause) = http_status(error);
+            anyhow::anyhow!(download_hint(id, file, status, &cause))
         })
     };
     let config_path = get("config.json")?;
@@ -132,10 +133,37 @@ fn download(
     })
 }
 
+/// Gated repos publish their file list to anyone, so only the file download itself is
+/// refused; the HTTP status is the one sign of that. Returns the status and the error text.
+fn http_status(error: ApiError) -> (Option<u16>, String) {
+    match error {
+        ApiError::RequestError(request) => {
+            let cause = request.to_string();
+            (request.into_response().map(|r| r.status()), cause)
+        }
+        other => (None, other.to_string()),
+    }
+}
+
+/// What to tell the user when `file` can't be downloaded from `id`.
+fn download_hint(id: &str, file: &str, status: Option<u16>, cause: &str) -> String {
+    match status {
+        Some(401 | 403) => format!(
+            "{id} is gated, so Hugging Face won't send {file} ({cause}).\n\
+             Accept its license at https://huggingface.co/{id}, create a read token at \
+             https://huggingface.co/settings/tokens, set HF_TOKEN to it and run again. \
+             Or pick an ungated model such as qwen2.5:1.5b"
+        ),
+        _ => format!(
+            "can't download {file} from {id} ({cause}); check your connection and try again"
+        ),
+    }
+}
+
 /// Lets training run offline when an earlier download is complete.
 fn cached(
     id: &str,
-    error: hf_hub::api::sync::ApiError,
+    error: ApiError,
     on_config: impl FnOnce(&Config) -> Result<()>,
 ) -> Result<Model> {
     let Some(config_path) = Cache::from_env().model(id.to_string()).get("config.json") else {
@@ -218,6 +246,26 @@ mod tests {
     fn a_model_the_caller_turns_down_is_not_fetched() {
         let error = fetch("tests/fixtures/qwen3", false, |_| bail!("too big")).err();
         assert_eq!(error.map(|e| e.to_string()), Some("too big".to_string()));
+    }
+
+    #[test]
+    fn a_refused_download_says_how_to_get_access() {
+        let id = "meta-llama/Llama-3.2-1B-Instruct";
+        for status in [401, 403] {
+            let hint = download_hint(id, "config.json", Some(status), "status code");
+            assert!(hint.contains("gated"), "{hint}");
+            assert!(hint.contains("HF_TOKEN"), "{hint}");
+            assert!(
+                hint.contains(&format!("https://huggingface.co/{id}")),
+                "{hint}"
+            );
+            assert!(hint.contains("qwen2.5:1.5b"), "{hint}");
+            assert!(!hint.contains("connection"), "{hint}");
+        }
+        for status in [None, Some(500)] {
+            let hint = download_hint(id, "config.json", status, "timed out");
+            assert!(hint.contains("check your connection"), "{hint}");
+        }
     }
 
     #[test]
