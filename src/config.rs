@@ -24,6 +24,9 @@ pub struct Config {
     #[serde(default)]
     pub tie_word_embeddings: bool,
     pub attention_bias: Option<bool>,
+    pub sliding_window: Option<usize>,
+    /// Qwen2 and Qwen3 ship a `sliding_window` but only use it when this is true.
+    pub use_sliding_window: Option<bool>,
 }
 
 /// Llama 3 stretches its RoPE frequencies. Other scaling schemes are refused in [`Config::check`].
@@ -82,7 +85,26 @@ impl Config {
                  Use --max-len {context} or less."
             );
         }
+        if let Some(window) = self.attention_window()
+            && max_len > window
+        {
+            bail!(
+                "--max-len {max_len} is longer than this model's sliding attention window of \
+                 {window} tokens. lorasmith trains with full attention, so longer examples would \
+                 learn from context the model never sees elsewhere. Use --max-len {window} or less."
+            );
+        }
         Ok(())
+    }
+
+    /// How far back each token attends, when the model limits it. Mirrors transformers,
+    /// where Mistral always honours `sliding_window` and Qwen only behind `use_sliding_window`.
+    fn attention_window(&self) -> Option<usize> {
+        match self.model_type.as_str() {
+            "mistral" => self.sliding_window,
+            "qwen2" | "qwen3" if self.use_sliding_window == Some(true) => self.sliding_window,
+            _ => None,
+        }
     }
 
     fn rope(&self) -> Option<&RopeParameters> {
@@ -173,6 +195,8 @@ pub fn tiny(model_type: &str) -> Config {
         max_position_embeddings: 128,
         tie_word_embeddings: false,
         attention_bias: None,
+        sliding_window: None,
+        use_sliding_window: None,
     }
 }
 
@@ -225,5 +249,33 @@ mod tests {
         assert!(config.check_max_len(128).is_ok());
         let message = config.check_max_len(129).unwrap_err().to_string();
         assert!(message.contains("--max-len 128 or less"), "{message}");
+    }
+
+    fn windowed(model_type: &str, use_sliding_window: Option<bool>) -> Config {
+        let mut config = tiny(model_type);
+        config.sliding_window = Some(64);
+        config.use_sliding_window = use_sliding_window;
+        config
+    }
+
+    #[test]
+    fn refuses_max_len_beyond_a_mistral_sliding_window() {
+        let config = windowed("mistral", None);
+        assert!(config.check_max_len(64).is_ok());
+        let message = config.check_max_len(65).unwrap_err().to_string();
+        assert!(message.contains("--max-len 64 or less"), "{message}");
+    }
+
+    #[test]
+    fn honours_a_qwen_sliding_window_only_when_enabled() {
+        assert!(windowed("qwen2", Some(false)).check_max_len(128).is_ok());
+        assert!(windowed("qwen3", None).check_max_len(128).is_ok());
+        assert!(windowed("qwen2", Some(true)).check_max_len(65).is_err());
+        assert!(windowed("qwen3", Some(true)).check_max_len(65).is_err());
+    }
+
+    #[test]
+    fn llama_ignores_a_sliding_window_field() {
+        assert!(windowed("llama", Some(true)).check_max_len(128).is_ok());
     }
 }
