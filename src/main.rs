@@ -81,6 +81,7 @@ fn train(args: TrainArgs) -> Result<()> {
     } else {
         device::best()
     };
+    let text = data::read(&args.data)?;
     let model = hub::fetch(&args.model, terminal, |config| {
         config.check_max_len(args.max_len)?;
         let size = config.parameters();
@@ -96,7 +97,7 @@ fn train(args: TrainArgs) -> Result<()> {
         };
         device::check_memory(&found, size, packed)
     })?;
-    let dataset = data::load(&args.data, &model.dir, args.max_len)?;
+    let dataset = data::load(&text, &args.data, &model.dir, args.max_len)?;
     let (examples, validation) = schedule::split(dataset.examples, Options::default().seed);
     println!(
         "Data    {} examples ({} cut to {} tokens, {} skipped, {} held out to check progress)",

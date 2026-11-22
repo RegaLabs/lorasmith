@@ -24,9 +24,9 @@ pub struct Dataset {
     pub skipped: usize,
 }
 
-/// Reads `path` and tokenizes every line for the model in `model_dir`, keeping at most `max_len` tokens each.
-pub fn load(path: &Path, model_dir: &Path, max_len: usize) -> Result<Dataset> {
-    let text = read_text(path)?;
+/// Tokenizes every line of `text`, read from `path`, for the model in `model_dir`, keeping
+/// at most `max_len` tokens each.
+pub fn load(text: &str, path: &Path, model_dir: &Path, max_len: usize) -> Result<Dataset> {
     let encoder = Encoder::load(model_dir)?;
     let mut first: Option<(Format, usize)> = None;
     let mut dataset = Dataset::default();
@@ -74,7 +74,9 @@ pub fn load(path: &Path, model_dir: &Path, max_len: usize) -> Result<Dataset> {
     Ok(dataset)
 }
 
-fn read_text(path: &Path) -> Result<String> {
+/// Reads a data file as UTF-8 text. Separate from `load` so a file saved in the wrong
+/// encoding is reported before the model downloads.
+pub fn read(path: &Path) -> Result<String> {
     let bytes = std::fs::read(path)
         .with_context(|| format!("can't read {}; check the path", path.display()))?;
     let resave = format!(
@@ -125,8 +127,12 @@ mod tests {
         tokenizer.decode(&ids, false).unwrap()
     }
 
+    fn load_file(path: &Path, model_dir: &str, max_len: usize) -> Result<Dataset> {
+        load(&read(path)?, path, Path::new(model_dir), max_len)
+    }
+
     fn error(path: &Path) -> String {
-        format!("{:#}", load(path, Path::new(SMOLLM2), 512).unwrap_err())
+        format!("{:#}", load_file(path, SMOLLM2, 512).unwrap_err())
     }
 
     #[test]
@@ -136,7 +142,7 @@ mod tests {
             r#"{"role": "user", "content": "Bye"}, {"role": "assistant", "content": "See you"}]}"#,
         );
         let path = jsonl("messages", &[line]);
-        let dataset = load(&path, Path::new(SMOLLM2), 512).unwrap();
+        let dataset = load_file(&path, SMOLLM2, 512).unwrap();
         assert_eq!(
             trained_text(&dataset.examples[0]),
             "Hello!<|im_end|>See you<|im_end|>"
@@ -151,7 +157,7 @@ mod tests {
             r#"{"role": "assistant", "content": "こんにちは 🌍 café"}]}"#,
         );
         let path = jsonl("non-ascii-messages", &[line]);
-        let dataset = load(&path, Path::new(SMOLLM2), 512).unwrap();
+        let dataset = load_file(&path, SMOLLM2, 512).unwrap();
         assert_eq!(
             trained_text(&dataset.examples[0]),
             "こんにちは 🌍 café<|im_end|>"
@@ -163,7 +169,7 @@ mod tests {
         let base_model = "tests/fixtures/sentencepiece";
         let line = r#"{"prompt": "Grüße, 日本語?", "completion": " こんにちは 🌍 café"}"#;
         let path = jsonl("non-ascii-pc", &[line]);
-        let dataset = load(&path, Path::new(base_model), 512).unwrap();
+        let dataset = load_file(&path, base_model, 512).unwrap();
         // The sentencepiece decoder drops the leading space of whatever it decodes first.
         assert_eq!(
             trained_text_in(base_model, &dataset.examples[0]),
@@ -174,7 +180,7 @@ mod tests {
     #[test]
     fn prompt_completion_trains_on_the_completion_as_a_chat() {
         let path = jsonl("pc", &[r#"{"prompt": "2+2?", "completion": "4"}"#]);
-        let dataset = load(&path, Path::new(SMOLLM2), 512).unwrap();
+        let dataset = load_file(&path, SMOLLM2, 512).unwrap();
         assert_eq!(trained_text(&dataset.examples[0]), "4<|im_end|>");
     }
 
@@ -188,7 +194,7 @@ mod tests {
                 r#"{"text": "Grass is green."}"#,
             ],
         );
-        let dataset = load(&path, Path::new(SMOLLM2), 512).unwrap();
+        let dataset = load_file(&path, SMOLLM2, 512).unwrap();
         assert_eq!(dataset.examples.len(), 2);
         assert_eq!(
             trained_text(&dataset.examples[1]),
@@ -205,7 +211,7 @@ mod tests {
             "word ".repeat(100)
         );
         let path = jsonl("truncate", &[long_answer, &long_prompt]);
-        let dataset = load(&path, Path::new(SMOLLM2), 32).unwrap();
+        let dataset = load_file(&path, SMOLLM2, 32).unwrap();
         assert_eq!(dataset.examples.len(), 1);
         assert_eq!(dataset.examples[0].tokens.len(), 32);
         assert_eq!((dataset.truncated, dataset.skipped), (2, 1));
@@ -214,7 +220,7 @@ mod tests {
     #[test]
     fn a_utf8_byte_order_mark_is_ignored() {
         let path = jsonl("bom", &["\u{feff}{\"text\": \"a\"}", r#"{"text": "b"}"#]);
-        let dataset = load(&path, Path::new(SMOLLM2), 512).unwrap();
+        let dataset = load_file(&path, SMOLLM2, 512).unwrap();
         assert_eq!(dataset.examples.len(), 2);
     }
 
