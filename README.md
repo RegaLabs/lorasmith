@@ -12,7 +12,7 @@ ollama create my-data -f runs/my-data/Modelfile
 ollama run my-data
 ```
 
-> **Status:** early. Training, download and export work on real models, and the result runs in Ollama. Tested and works well on Windows (DirectX 12, Vulkan and CPU) and Linux (NVIDIA Quadro M2200, Intel HD 630 and CPU). On macOS only the CPU tests have run in CI so far; Metal and AMD cards should work through wgpu: [reports are welcome](CONTRIBUTING.md).
+> **Status:** early. Training, download and export work on real models, and the result runs in Ollama. Tested on Windows (DirectX 12, Vulkan and CPU) and Linux (NVIDIA Quadro M2200, Intel HD 630 and CPU). On macOS, an M4 Max trained a Qwen2.5 0.5B LoRA on Metal, exported it to GGUF and ran the export in llama.cpp. [Reports from other hardware are welcome](CONTRIBUTING.md).
 
 ## Why
 
@@ -165,8 +165,7 @@ When memory runs out, lorasmith says so and suggests, in this order: `--qlora`, 
 
 ## Limits
 
-- Early software, run by one person on one laptop so far.
-- Tested on Windows and Linux so far. On macOS only the CPU tests have run in CI, and nobody has trained on Apple Silicon yet.
+- The Apple Silicon smoke test used standard LoRA in half precision on an M4 Max with macOS 26.6.2. Other Macs, QLoRA on macOS and AMD cards still need testing.
 - Built on a Burn that isn't released. A checkout pins the exact commit; the crates.io release uses the latest Burn pre-release and loses most of what `--qlora` saves.
 - A stopped run can't be resumed. Its last finished epoch is kept as an adapter in `checkpoint/`.
 - No inference server, chat UI, multi-GPU training, full fine-tuning or other architectures. That is on purpose: lorasmith trains, exports and gets out of the way.
