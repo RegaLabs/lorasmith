@@ -9,8 +9,8 @@ Open an issue with the command you ran, what it printed, and what you expected. 
 `lorasmith devices` and your operating system help a lot: most surprises so far have been
 about one GPU or driver.
 
-Reports from hardware we haven't run on are especially welcome: Apple Silicon, AMD cards and
-Windows. "It worked" is useful too.
+Reports from hardware we haven't run on are especially welcome: Apple Silicon and AMD cards.
+"It worked" is useful too.
 
 Security problems go through [SECURITY.md](SECURITY.md), not a public issue.
 
