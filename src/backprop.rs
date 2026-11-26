@@ -8,6 +8,7 @@
 //! backward pass through the whole model hands on. Burn can't backpropagate through a graph
 //! twice, so every piece builds a graph of its own.
 
+use burn::module::Module;
 use burn::optim::GradientsParams;
 use burn::tensor::{Int, Tensor};
 
@@ -30,15 +31,22 @@ pub fn gradients(
     let mut x = model.embed_tokens.forward(batch.inputs).detach();
     let mut inputs = Vec::new();
     let mut kept = Vec::new();
-    for block in &model.layers {
-        let layer = Layer::run(block, &x, rope);
-        let next = layer.output.clone().detach();
-        if checkpoint {
+    if checkpoint {
+        // Without autodiff: Burn would otherwise keep every layer's recorded steps until the
+        // next backward pass, which is all the memory checkpointing is meant to save.
+        let plain = model.valid();
+        x = x.without_autodiff();
+        for block in &plain.layers {
+            let next = output(block, x.clone(), plain.rope());
             inputs.push(x);
-        } else {
+            x = next;
+        }
+    } else {
+        for block in &model.layers {
+            let layer = Layer::run(block, &x, rope);
+            x = layer.output.clone().detach();
             kept.push(layer);
         }
-        x = next;
     }
     let (loss, mut grad) = head(model, x, batch.positions, batch.targets, loss_scale);
     let mut params = GradientsParams::new();
@@ -64,13 +72,21 @@ struct Layer {
     output: Tensor<3>,
 }
 
+/// A layer's output, computed the same way as in [`Layer::run`].
+fn output(block: &Block, x: Tensor<3>, rope: &Rope) -> Tensor<3> {
+    let (q, k, v) = block.attention_inputs(x.clone(), rope);
+    let (attended, _) = attention::forward(&q, &k, &v);
+    block.finish(x, attended)
+}
+
 impl Layer {
     fn run(block: &Block, x: &Tensor<3>, rope: &Rope) -> Self {
-        let input_to_qkv = x.clone().detach().require_grad();
+        let leaf = || x.clone().autodiff().detach().require_grad();
+        let input_to_qkv = leaf();
         let (q, k, v) = block.attention_inputs(input_to_qkv.clone(), rope);
         let (out, logsumexp) = attention::forward(&plain(&q), &plain(&k), &plain(&v));
         let attended = out.autodiff().require_grad();
-        let input_to_output = x.clone().detach().require_grad();
+        let input_to_output = leaf();
         let output = block.finish(input_to_output.clone(), attended.clone());
         Self {
             input_to_qkv,
@@ -126,7 +142,7 @@ fn head(
     let mut loss = 0.0;
     let mut grad: Option<Tensor<3>> = None;
     for range in batch::chunks(count, model.vocab_size()) {
-        let leaf = x.clone().detach().require_grad();
+        let leaf = x.clone().autodiff().detach().require_grad();
         let hidden = model
             .norm
             .forward(leaf.clone())
