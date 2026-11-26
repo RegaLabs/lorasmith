@@ -55,6 +55,10 @@ struct TrainArgs {
     /// exactness; the merged model is still built on the full weights.
     #[arg(long)]
     qlora: bool,
+    /// Run each layer again during the backward pass instead of keeping its activations.
+    /// Slower, with far less memory for long examples and the same results.
+    #[arg(long)]
+    checkpoint: bool,
     /// Stretch the context of a model pretrained without RoPE scaling. Only `yarn`, as
     /// Qwen documents for long inputs; the merged model and GGUF file keep it.
     #[arg(long, value_parser = ["yarn"])]
@@ -159,6 +163,7 @@ fn train(args: TrainArgs) -> Result<()> {
             .epochs
             .unwrap_or_else(|| schedule::epochs_for(examples.len(), args.batch_size)),
         batch_size: args.batch_size,
+        checkpoint: args.checkpoint,
         ..Options::default()
     };
     let steps = examples.len().div_ceil(options.batch_size) * options.epochs;
