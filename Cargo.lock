@@ -814,6 +814,7 @@ name = "burn-flex"
 version = "0.23.0-pre.2"
 source = "git+https://github.com/shahrryyar/burn.git?rev=5a4134ad10049543cc79892ba73057bfd8b10725#5a4134ad10049543cc79892ba73057bfd8b10725"
 dependencies = [
+ "aligned-vec",
  "burn-backend",
  "burn-ir",
  "burn-std",
@@ -821,9 +822,11 @@ dependencies = [
  "gemm",
  "half",
  "libm",
+ "macerator",
  "num-traits",
  "once_cell",
  "portable-atomic",
+ "rayon",
 ]
 
 [[package]]
@@ -2968,6 +2971,7 @@ dependencies = [
  "paste",
  "pulp",
  "raw-cpuid",
+ "rayon",
  "seq-macro",
  "sysctl",
 ]
@@ -2986,6 +2990,7 @@ dependencies = [
  "num-traits",
  "paste",
  "raw-cpuid",
+ "rayon",
  "seq-macro",
 ]
 
@@ -3971,6 +3976,7 @@ dependencies = [
  "hf-hub",
  "minijinja",
  "minijinja-contrib",
+ "rayon",
  "safetensors",
  "serde",
  "serde_json",

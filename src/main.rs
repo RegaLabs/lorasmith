@@ -55,6 +55,10 @@ struct TrainArgs {
     /// exactness; the merged model is still built on the full weights.
     #[arg(long)]
     qlora: bool,
+    /// CPU threads to compute with. Defaults to every thread the CPU has; fewer leaves
+    /// room for other programs.
+    #[arg(long, value_parser = at_least(1))]
+    threads: Option<usize>,
     /// Run each layer again during the backward pass instead of keeping its activations.
     /// Far less memory for long examples and the same results, for a second forward pass.
     #[arg(long)]
@@ -94,6 +98,12 @@ fn main() -> Result<()> {
 }
 
 fn train(args: TrainArgs) -> Result<()> {
+    if let Some(threads) = args.threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global()
+            .context("can't set up the CPU threads. Try again without --threads")?;
+    }
     let terminal = std::io::stdout().is_terminal();
     let found = if args.cpu {
         device::cpu()
@@ -321,6 +331,7 @@ mod tests {
         assert!(parse(&["--batch-size", "0"]).is_err());
         assert!(parse(&["--max-len", "1"]).is_err());
         assert!(parse(&["--rank", "0"]).is_err());
+        assert!(parse(&["--threads", "0"]).is_err());
         assert!(parse(&["--batch-size", "1", "--max-len", "2", "--rank", "1"]).is_ok());
     }
 

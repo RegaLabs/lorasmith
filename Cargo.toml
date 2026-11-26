@@ -33,12 +33,18 @@ burn = { version = "=0.23.0-pre.2", git = "https://github.com/shahrryyar/burn.gi
     "fusion",
     "wgpu",
     "flex",
+    # Without these the CPU backend computes on one core and without vector instructions.
+    "rayon",
+    "simd",
     "safetensors",
 ] }
 clap = { version = "4", features = ["derive"] }
 hf-hub = { version = "0.4.3", default-features = false, features = ["ureq"] }
 minijinja = { version = "3.1", features = ["json", "loop_controls", "serde"] }
 minijinja-contrib = { version = "3.1", features = ["pycompat"] }
+# Sizes the thread pool Burn's CPU backend computes on, for --threads. Burn and tokenizers
+# already depend on it.
+rayon = "1"
 serde = { version = "1", features = ["derive"] }
 safetensors = "0.8"
 serde_json = "1"
