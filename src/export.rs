@@ -9,6 +9,7 @@ use burn::tensor::{Tensor, TensorData};
 use safetensors::{Dtype, tensor::TensorView};
 use serde_json::json;
 
+use crate::config::Config;
 use crate::model::Llama;
 
 /// File types that hold the base model's weights, which the merged model replaces.
@@ -22,17 +23,19 @@ const WEIGHTS: &[&str] = &[
 ];
 
 /// Writes the adapter, the merged model under `merged/`, `model.gguf` and a `Modelfile` into `dir`.
-/// `base` names the base model for the adapter config, `model_dir` holds its files.
+/// `base` names the base model for the adapter config, `model_dir` holds its files, and
+/// `config` is what the model was trained with, see [`merged`].
 /// Returns why no GGUF file was written, if one wasn't; the Modelfile then points at `merged/`.
 pub fn all(
     model: Llama,
     base: &str,
     model_dir: &Path,
+    config: &Config,
     dir: &Path,
 ) -> Result<Option<anyhow::Error>> {
     std::fs::create_dir_all(dir).with_context(|| format!("can't create {}", dir.display()))?;
     adapter(&model, base, dir)?;
-    merged(model, model_dir, &dir.join("merged"))?;
+    merged(model, model_dir, config, &dir.join("merged"))?;
     // Ollama runs GGUF on every machine, but runs a safetensors folder only where it has MLX.
     let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("model");
     let gguf = crate::gguf::convert(&dir.join("merged"), name, &dir.join("model.gguf"));
@@ -88,8 +91,9 @@ pub fn adapter(model: &Llama, base: &str, dir: &Path) -> Result<()> {
 }
 
 /// Folds the adapters into the base weights and writes a plain HF model folder,
-/// copying the tokenizer and config files from `model_dir`.
-pub fn merged(model: Llama, model_dir: &Path, dir: &Path) -> Result<()> {
+/// copying the tokenizer and config files from `model_dir`. `config.json` gets the YaRN
+/// scaling of `config`, which `--rope-scaling` may have added.
+pub fn merged(model: Llama, model_dir: &Path, config: &Config, dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("can't create {}", dir.display()))?;
     for entry in std::fs::read_dir(model_dir)
         .with_context(|| format!("can't read {}", model_dir.display()))?
@@ -99,7 +103,14 @@ pub fn merged(model: Llama, model_dir: &Path, dir: &Path) -> Result<()> {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default();
-        if path.is_file() && !name.starts_with('.') && !WEIGHTS.iter().any(|w| name.ends_with(w)) {
+        if name == "config.json" {
+            let text = std::fs::read_to_string(&path).context("can't read config.json")?;
+            std::fs::write(dir.join(name), config.write_yarn(&text)?)
+                .with_context(|| format!("can't write config.json into {}", dir.display()))?;
+        } else if path.is_file()
+            && !name.starts_with('.')
+            && !WEIGHTS.iter().any(|w| name.ends_with(w))
+        {
             std::fs::copy(&path, dir.join(name))
                 .with_context(|| format!("can't copy {} into {}", name, dir.display()))?;
         }
@@ -162,6 +173,11 @@ mod tests {
         train::train(model, &[example], &[], &options, device, |_| ()).unwrap()
     }
 
+    fn config(dir: &str) -> Config {
+        Config::parse(&std::fs::read_to_string(Path::new(dir).join("config.json")).unwrap())
+            .unwrap()
+    }
+
     fn temp(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("lorasmith-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -180,7 +196,7 @@ mod tests {
         let model = trained(&device);
         let expected = logits(&model, &device);
         let dir = temp("merged");
-        merged(model, Path::new(BASE), &dir).unwrap();
+        merged(model, Path::new(BASE), &config(BASE), &dir).unwrap();
 
         let (_, reloaded) = crate::load::model(&dir, &device, FloatDType::F32).unwrap();
         logits(&reloaded, &device).assert_approx_eq::<f32>(&expected, Tolerance::absolute(1e-4));
@@ -192,12 +208,44 @@ mod tests {
         let device = Device::flex().autodiff();
         let dir = temp("all");
         // The tiny fixture has no tokenizer, so no GGUF file can be written.
-        let skipped = all(trained(&device), "tiny-llama", Path::new(BASE), &dir).unwrap();
+        let skipped = all(
+            trained(&device),
+            "tiny-llama",
+            Path::new(BASE),
+            &config(BASE),
+            &dir,
+        )
+        .unwrap();
         assert!(skipped.is_some());
         assert_eq!(
             std::fs::read_to_string(dir.join("Modelfile")).unwrap(),
             "FROM ./merged\n"
         );
+    }
+
+    #[test]
+    fn a_stretched_context_survives_merging() {
+        let qwen = "tests/fixtures/qwen2";
+        let device = Device::flex();
+        let mut stretched = config(qwen);
+        stretched.stretch(4.0).unwrap();
+        let model = crate::load::model_as(&stretched, Path::new(qwen), &device, FloatDType::F32);
+        let model = train::attach(model.unwrap(), &Options::default());
+        let expected = logits(&model, &device);
+        let dir = temp("stretched");
+        merged(model, Path::new(qwen), &stretched, &dir).unwrap();
+
+        let (reread, reloaded) = crate::load::model(&dir, &device, FloatDType::F32).unwrap();
+        assert_eq!(reread.yarn(), stretched.yarn());
+        assert_eq!(reread.context(), 4 * 128);
+        logits(&reloaded, &device).assert_approx_eq::<f32>(&expected, Tolerance::absolute(1e-5));
+        let unstretched = logits(
+            &crate::load::model(Path::new(qwen), &device, FloatDType::F32)
+                .unwrap()
+                .1,
+            &device,
+        );
+        assert_ne!(unstretched, expected);
     }
 
     #[test]

@@ -109,9 +109,9 @@ fn merging_a_half_precision_model_starts_from_the_published_weights() {
     let (model, _) = trained(FloatDType::F16, 1024.0, &device);
     let expected = logits(&model, &device);
     let dir = std::env::temp_dir().join(format!("lorasmith-half-{}", std::process::id()));
-    export::merged(model, Path::new(BASE), &dir).unwrap();
+    let (config, published) = load::model(Path::new(BASE), &device, FloatDType::F32).unwrap();
+    export::merged(model, Path::new(BASE), &config, &dir).unwrap();
 
-    let (_, published) = load::model(Path::new(BASE), &device, FloatDType::F32).unwrap();
     let (_, merged) = load::model(&dir, &device, FloatDType::F32).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(

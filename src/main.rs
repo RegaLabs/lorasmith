@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use burn::tensor::FloatDType;
 use clap::{Parser, Subcommand};
+use lorasmith::config::Config;
 use lorasmith::train::{Options, Progress};
 use lorasmith::{data, device, export, hub, load, qlora, schedule, train};
 
@@ -54,6 +55,20 @@ struct TrainArgs {
     /// exactness; the merged model is still built on the full weights.
     #[arg(long)]
     qlora: bool,
+    /// Stretch the context of a model pretrained without RoPE scaling. Only `yarn`, as
+    /// Qwen documents for long inputs; the merged model and GGUF file keep it.
+    #[arg(long, value_parser = ["yarn"])]
+    rope_scaling: Option<String>,
+    /// How many times longer the context gets with --rope-scaling. Above 1.
+    #[arg(long, default_value_t = 4.0, requires = "rope_scaling", value_parser = above_one)]
+    rope_factor: f64,
+}
+
+fn above_one(text: &str) -> Result<f64, String> {
+    match text.parse::<f64>() {
+        Ok(n) if n > 1.0 && n.is_finite() => Ok(n),
+        _ => Err("use a number above 1, such as 4".to_string()),
+    }
 }
 
 /// Parses a whole number no smaller than `min`. Clap puts the flag name in front of the error.
@@ -82,7 +97,15 @@ fn train(args: TrainArgs) -> Result<()> {
         device::best()
     };
     let text = data::read(&args.data)?;
+    let shape = |config: &Config| -> Result<Config> {
+        let mut config = config.clone();
+        if args.rope_scaling.is_some() {
+            config.stretch(args.rope_factor)?;
+        }
+        Ok(config)
+    };
     let model = hub::fetch(&args.model, terminal, |config| {
+        let config = shape(config)?;
         config.check_max_len(args.max_len)?;
         let size = config.parameters();
         println!(
@@ -97,6 +120,14 @@ fn train(args: TrainArgs) -> Result<()> {
         };
         device::check_memory(&found, size, packed)
     })?;
+    let config = shape(&model.config)?;
+    if let Some(yarn) = config.yarn().filter(|_| args.rope_scaling.is_some()) {
+        println!(
+            "Context {} tokens, stretched {}x with YaRN",
+            config.context(),
+            yarn.factor
+        );
+    }
     let dataset = data::load(&text, &args.data, &model.dir, args.max_len)?;
     let (examples, validation) = schedule::split(dataset.examples, Options::default().seed);
     println!(
@@ -142,9 +173,9 @@ fn train(args: TrainArgs) -> Result<()> {
     let mut scores = Vec::new();
     let trained = device::guard(|| -> Result<_> {
         let base = if args.qlora {
-            qlora::load(&model.dir, &device, found.dtype)?
+            qlora::load(&config, &model.dir, &device, found.dtype)?
         } else {
-            load::model(&model.dir, &device, found.dtype)?.1
+            load::model_as(&config, &model.dir, &device, found.dtype)?
         };
         let base = train::attach(base, &options);
         train::train(base, &examples, &validation, &options, &device, |p| {
@@ -171,13 +202,21 @@ fn train(args: TrainArgs) -> Result<()> {
         );
     }
 
-    let skipped = device::guard(|| export::all(trained, &model.id, &model.dir, &out))??;
+    let skipped = device::guard(|| export::all(trained, &model.id, &model.dir, &config, &out))??;
     // The finished run holds the final adapter; the checkpoint was only a safety net.
     std::fs::remove_dir_all(&checkpoint).ok();
     if let Some(reason) = skipped {
         println!("\nNote    no GGUF file: {reason:#}");
         println!(
             "        Ollama can still run merged/ on Apple Silicon and NVIDIA RTX 20 series or newer."
+        );
+    }
+    if let Some(yarn) = config.yarn().filter(|_| args.rope_scaling.is_some()) {
+        println!(
+            "\nNote    the adapter alone doesn't carry --rope-scaling. Load its base model with\n        \
+             rope_scaling {{\"rope_type\": \"yarn\", \"factor\": {}, \
+             \"original_max_position_embeddings\": {}}}, as merged/config.json has it.",
+            yarn.factor, yarn.original_context
         );
     }
     let name = out
@@ -278,5 +317,17 @@ mod tests {
         assert!(parse(&["--max-len", "1"]).is_err());
         assert!(parse(&["--rank", "0"]).is_err());
         assert!(parse(&["--batch-size", "1", "--max-len", "2", "--rank", "1"]).is_ok());
+    }
+
+    #[test]
+    fn rope_factor_needs_rope_scaling_and_a_real_stretch() {
+        assert!(parse(&["--rope-factor", "4"]).is_err());
+        assert!(parse(&["--rope-scaling", "linear"]).is_err());
+        assert!(parse(&["--rope-scaling", "yarn", "--rope-factor", "1"]).is_err());
+        assert!(parse(&["--rope-scaling", "yarn", "--rope-factor", "inf"]).is_err());
+        let Command::Train(args) = parse(&["--rope-scaling", "yarn"]).unwrap().command else {
+            panic!("expected train");
+        };
+        assert_eq!(args.rope_factor, 4.0);
     }
 }

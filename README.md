@@ -81,6 +81,8 @@ Every flag has a default, so `lorasmith train <model> <data>` is enough.
 | `--rank <n>` | 16 | LoRA rank, at least 1. Higher learns more and uses more memory. Alpha is twice the rank. |
 | `--qlora` | off | Holds the model in 4 bits while training. Needs far less GPU memory; the merged model is still built on the full weights. |
 | `--cpu` | off | Trains on the CPU even when a GPU works. |
+| `--rope-scaling yarn` | off | Stretches the context of a model pretrained without RoPE scaling, the way Qwen documents for long inputs. The merged model's `config.json` and the GGUF file carry the setting; the adapter alone does not, so load its base model with the `rope_scaling` that `merged/config.json` shows. Models that already use YaRN, such as Qwen2.5 with it in `config.json`, train with it without this flag. |
+| `--rope-factor <x>` | 4 | How many times longer `--rope-scaling` makes the context. Qwen2.5-0.5B goes from 32768 to 131072 tokens at 4. |
 
 With several GPUs, `CUBECL_WGPU_DEFAULT_DEVICE='IntegratedGpu(0)'` or `'DiscreteGpu(1)'` picks one (in PowerShell, `$env:CUBECL_WGPU_DEFAULT_DEVICE = 'DiscreteGpu(1)'`); `lorasmith devices` lists them.
 

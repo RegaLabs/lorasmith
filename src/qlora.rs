@@ -8,6 +8,7 @@ use burn::module::{Module, Quantizer};
 use burn::tensor::quantization::{Calibration, QuantValue, ScaleDtype};
 use burn::tensor::{Device, FloatDType};
 
+use crate::config::Config;
 use crate::lora;
 use crate::model::Llama;
 
@@ -17,12 +18,12 @@ use crate::model::Llama;
 /// Q4_0.
 pub const BLOCK: u8 = 32;
 
-/// Loads the model in `dir` onto `device` with every projection packed into 4 bits.
-/// Embeddings, norms and the output head stay in `dtype`.
-pub fn load(dir: &Path, device: &Device, dtype: FloatDType) -> Result<Llama> {
+/// Loads the model in `dir`, shaped by `config`, onto `device` with every projection packed
+/// into 4 bits. Embeddings, norms and the output head stay in `dtype`.
+pub fn load(config: &Config, dir: &Path, device: &Device, dtype: FloatDType) -> Result<Llama> {
     // Packed in system RAM first. A GPU that has once held the full weights keeps that
     // memory reserved, which gives back most of what packing saves.
-    let (_, model) = crate::load::model(dir, &Device::flex(), dtype)?;
+    let model = crate::load::model_as(config, dir, &Device::flex(), dtype)?;
     // The model arrives from a device without autodiff, where nothing is trainable.
     // `train` lets the adapters attached next be.
     Ok(pack(model, device).to_device(device).train())
@@ -74,6 +75,11 @@ mod tests {
             .unwrap()
     }
 
+    fn base_config() -> Config {
+        let text = std::fs::read_to_string(Path::new(BASE).join("config.json")).unwrap();
+        Config::parse(&text).unwrap()
+    }
+
     fn is_packed(model: &Llama) -> bool {
         lora::projections(model)
             .first()
@@ -90,7 +96,7 @@ mod tests {
         let device = Device::flex().autodiff();
         let (_, full) = crate::load::model(Path::new(BASE), &device, FloatDType::F32).unwrap();
         assert!(!is_packed(&full));
-        let model = load(Path::new(BASE), &device, FloatDType::F32).unwrap();
+        let model = load(&base_config(), Path::new(BASE), &device, FloatDType::F32).unwrap();
         assert!(is_packed(&model));
         for (name, layer) in lora::projections(&model) {
             let dtype = layer.weight.base().dtype();
@@ -128,7 +134,7 @@ mod tests {
     #[test]
     fn training_changes_the_adapters_and_leaves_the_packed_base_alone() {
         let device = Device::flex().autodiff();
-        let model = load(Path::new(BASE), &device, FloatDType::F32).unwrap();
+        let model = load(&base_config(), Path::new(BASE), &device, FloatDType::F32).unwrap();
         let before = logits(&model, &device);
         let model = train::attach(model, &Options::default());
         assert_eq!(before, logits(&model, &device));
@@ -160,7 +166,7 @@ mod tests {
     #[test]
     fn merging_folds_the_adapters_into_the_published_weights() {
         let device = Device::flex().autodiff();
-        let model = load(Path::new(BASE), &device, FloatDType::F32).unwrap();
+        let model = load(&base_config(), Path::new(BASE), &device, FloatDType::F32).unwrap();
         let model = train::attach(model, &Options::default());
         // B starts at zero, and merging adapters that do nothing would prove nothing.
         let model = lora::set_factors(model, |path, shape| {
@@ -171,7 +177,7 @@ mod tests {
         let lora = model.layers[0].mlp.down_proj.weight.adapter().unwrap();
         let change = lora.a.val().matmul(lora.b.val()).mul_scalar(lora.scale);
         let dir = std::env::temp_dir().join(format!("lorasmith-qlora-{}", std::process::id()));
-        crate::export::all(model, "tiny-llama", Path::new(BASE), &dir).unwrap();
+        crate::export::all(model, "tiny-llama", Path::new(BASE), &base_config(), &dir).unwrap();
 
         let down_proj = |dir: &Path| {
             let (_, model) = crate::load::model(dir, &device, FloatDType::F32).unwrap();
