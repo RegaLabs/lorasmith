@@ -56,7 +56,7 @@ struct TrainArgs {
     #[arg(long)]
     qlora: bool,
     /// Run each layer again during the backward pass instead of keeping its activations.
-    /// Slower, with far less memory for long examples and the same results.
+    /// Far less memory for long examples and the same results, for a second forward pass.
     #[arg(long)]
     checkpoint: bool,
     /// Stretch the context of a model pretrained without RoPE scaling. Only `yarn`, as
