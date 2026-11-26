@@ -32,8 +32,12 @@ pub struct Config {
 /// Llama 3 stretches its RoPE frequencies. Other scaling schemes are refused in [`Config::check`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct RopeParameters {
-    #[serde(alias = "type")]
+    /// Empty when the config only names it `type`, see [`RopeParameters::kind`].
+    #[serde(default)]
     pub rope_type: String,
+    /// What older configs call `rope_type`. transformers 5 writes both.
+    #[serde(default, rename = "type")]
+    pub legacy_type: String,
     pub rope_theta: Option<f64>,
     #[serde(default)]
     pub factor: f64,
@@ -43,6 +47,17 @@ pub struct RopeParameters {
     pub high_freq_factor: f64,
     #[serde(default)]
     pub original_max_position_embeddings: usize,
+}
+
+impl RopeParameters {
+    /// The scaling scheme, whichever of the two keys names it.
+    pub fn kind(&self) -> &str {
+        if self.rope_type.is_empty() {
+            &self.legacy_type
+        } else {
+            &self.rope_type
+        }
+    }
 }
 
 impl Config {
@@ -63,11 +78,11 @@ impl Config {
             );
         }
         if let Some(rope) = self.rope()
-            && !matches!(rope.rope_type.as_str(), "llama3" | "default")
+            && !matches!(rope.kind(), "llama3" | "default")
         {
             bail!(
                 "RoPE scaling `{}` is not supported yet. Try a model without long-context scaling.",
-                rope.rope_type
+                rope.kind()
             );
         }
         if !self.num_attention_heads.is_multiple_of(self.kv_heads()) {
@@ -120,7 +135,7 @@ impl Config {
     }
 
     pub fn llama3_scaling(&self) -> Option<&RopeParameters> {
-        self.rope().filter(|rope| rope.rope_type == "llama3")
+        self.rope().filter(|rope| rope.kind() == "llama3")
     }
 
     pub fn kv_heads(&self) -> usize {
@@ -233,6 +248,25 @@ mod tests {
         let config = Config::parse(json).unwrap();
         assert_eq!(config.rope_theta(), 500_000.0);
         assert_eq!(config.llama3_scaling().unwrap().factor, 8.0);
+    }
+
+    #[test]
+    fn reads_rope_settings_named_both_ways() {
+        // transformers 5 saves `type` next to `rope_type`; older configs have only `type`.
+        let config = |rope: &str| {
+            let json = format!(
+                r#"{{"model_type": "llama", "vocab_size": 64, "hidden_size": 32,
+                "intermediate_size": 48, "num_hidden_layers": 2, "num_attention_heads": 4,
+                "rms_norm_eps": 1e-06, "max_position_embeddings": 128,
+                "rope_scaling": {{{rope}, "factor": 8.0, "low_freq_factor": 1.0,
+                    "high_freq_factor": 4.0, "original_max_position_embeddings": 64}}}}"#
+            );
+            Config::parse(&json).unwrap()
+        };
+        let both = config(r#""rope_type": "llama3", "type": "llama3""#);
+        assert_eq!(both.llama3_scaling().unwrap().factor, 8.0);
+        let legacy = config(r#""type": "llama3""#);
+        assert_eq!(legacy.llama3_scaling().unwrap().factor, 8.0);
     }
 
     #[test]

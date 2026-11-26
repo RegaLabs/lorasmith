@@ -93,6 +93,7 @@ mod tests {
         let plain = inverse_frequencies(&config);
         config.rope_scaling = Some(crate::config::RopeParameters {
             rope_type: "llama3".to_string(),
+            legacy_type: String::new(),
             rope_theta: None,
             factor: 8.0,
             low_freq_factor: 1.0,
