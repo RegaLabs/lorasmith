@@ -41,7 +41,7 @@ fn trained(dtype: FloatDType, mut loss_scale: f64, device: &Device) -> (Llama, V
             &mut optimizer,
             &[&example],
             1e-2,
-            1.0,
+            &Options::default(),
             &mut loss_scale,
             device,
         );
@@ -94,7 +94,7 @@ fn gradients_too_big_for_half_precision_skip_the_step() {
         &mut train::optimizer(),
         &[&example],
         1e-2,
-        1.0,
+        &Options::default(),
         &mut loss_scale,
         &device,
     );
@@ -109,9 +109,9 @@ fn merging_a_half_precision_model_starts_from_the_published_weights() {
     let (model, _) = trained(FloatDType::F16, 1024.0, &device);
     let expected = logits(&model, &device);
     let dir = std::env::temp_dir().join(format!("lorasmith-half-{}", std::process::id()));
-    export::merged(model, Path::new(BASE), &dir).unwrap();
+    let (config, published) = load::model(Path::new(BASE), &device, FloatDType::F32).unwrap();
+    export::merged(model, Path::new(BASE), &config, &dir).unwrap();
 
-    let (_, published) = load::model(Path::new(BASE), &device, FloatDType::F32).unwrap();
     let (_, merged) = load::model(&dir, &device, FloatDType::F32).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
     assert_eq!(

@@ -81,6 +81,9 @@ Every flag has a default, so `lorasmith train <model> <data>` is enough.
 | `--rank <n>` | 16 | LoRA rank, at least 1. Higher learns more and uses more memory. Alpha is twice the rank. |
 | `--qlora` | off | Holds the model in 4 bits while training. Needs far less GPU memory; the merged model is still built on the full weights. |
 | `--cpu` | off | Trains on the CPU even when a GPU works. |
+| `--checkpoint` | off | Runs each layer again during the backward pass instead of keeping its activations. Same losses and gradients; far less memory for long examples, see below. |
+| `--rope-scaling yarn` | off | Stretches the context of a model pretrained without RoPE scaling, the way Qwen documents for long inputs. The merged model's `config.json` and the GGUF file carry the setting; the adapter alone does not, so load its base model with the `rope_scaling` that `merged/config.json` shows. Models that already use YaRN, such as Qwen2.5 with it in `config.json`, train with it without this flag. |
+| `--rope-factor <x>` | 4 | How many times longer `--rope-scaling` makes the context. Qwen2.5-0.5B goes from 32768 to 131072 tokens at 4. |
 
 With several GPUs, `CUBECL_WGPU_DEFAULT_DEVICE='IntegratedGpu(0)'` or `'DiscreteGpu(1)'` picks one (in PowerShell, `$env:CUBECL_WGPU_DEFAULT_DEVICE = 'DiscreteGpu(1)'`); `lorasmith devices` lists them.
 
@@ -161,7 +164,28 @@ What those numbers mean in practice:
 - **A 1.5B model only just fits 4 GB.** At batch 4 the GPU is 95% full even with 45-token examples, and a GPU that full is erratic: the first four steps have taken anywhere from 3 to 10 minutes, the later ones about 5 seconds each. With `--batch-size 1` it takes 2 seconds a step from the first one.
 - **System RAM matters too.** With `--qlora` the model is packed in RAM before it moves to the GPU: Qwen2.5-1.5B needs 8.3 GB for about a minute, Qwen2.5-0.5B about 5 GB.
 
-When memory runs out, lorasmith says so and suggests, in this order: `--qlora`, `--batch-size 1`, a lower `--max-len`, a smaller model, or `--cpu` to use system RAM instead.
+When memory runs out, lorasmith says so and suggests, in this order: `--qlora`, `--batch-size 1`, a lower `--max-len`, a smaller model, or `--cpu` to use system RAM instead. For long examples, add `--checkpoint`.
+
+### Long examples on the CPU
+
+Measured on an Intel i5-14400F with 16 GB of RAM, no GPU used: Qwen2.5-0.5B with `--cpu --batch-size 1 --epochs 1` on three plain-text examples, each long enough to be cut to `--max-len`. Peak RAM is the process's committed memory. Seconds per step are the average of steps 2 and 3; step 1 also loads the model. The loss is the one reported at step 3. The PC ran other programs at the same time, so the times vary by about a quarter from run to run.
+
+| `--max-len` | Version | Flags | Peak RAM | Seconds per step | Loss at step 3 |
+|---|---|---|---|---|---|
+| 1024 | 0.1.1 | none | 10.6 GB | 37 | 1.312 |
+| 1024 | this one | none | 6.5 GB | 42 | 1.312 |
+| 1024 | this one | `--checkpoint` | 3.6 GB | 75 | 1.312 |
+| 4096 | 0.1.1 | none | over 22 GB, stopped before step 1 finished | - | - |
+| 4096 | this one | none | 15.4 GB | 382 | 1.024 |
+| 4096 | this one | `--checkpoint` | 3.8 GB | 352 | 1.024 |
+| 8192 | 0.1.1 | none | over 22 GB, stopped before step 1 finished | - | - |
+| 16384 | 0.1.1 | none | over 22 GB, stopped before step 1 finished | - | - |
+
+**8192, 16384 and 32768 tokens have not been measured with this version yet.** 0.1.1 ran out at 4096, 8192 and 16384 because Burn's autodiff kept each layer's full `[heads, seq, seq]` attention probabilities for the backward pass. This version runs the backward pass one layer at a time: attention goes through in blocks that keep one log-sum-exp per query, and the loss goes through chunks of positions. At 1024 tokens, the only length 0.1.1 finished, the losses match its to the last digit shown, and `--checkpoint` changes no loss at any length measured.
+
+- **Without `--checkpoint`, memory still grows with length**, because every layer's activations are kept: 15.4 GB at 4096 tokens fills a 16 GB PC, and Windows starts paging, which is most of why that run is slow.
+- **With `--checkpoint`, memory barely grows**: 3.6 GB at 1024 tokens and 3.8 GB at 4096. Each layer runs twice, which costs time on short examples but not at 4096, where the run without it pages.
+- **`--rope-scaling yarn` was checked in Ollama 0.40.18**: on an 802-token prompt, the GGUF file's top five next-token log-probabilities were within 0.055 of transformers with YaRN, and up to 0.32 away from transformers without it.
 
 ## Limits
 

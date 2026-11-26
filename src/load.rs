@@ -20,9 +20,16 @@ pub fn model(dir: &Path, device: &Device, dtype: FloatDType) -> Result<(Config, 
     let json =
         fs::read_to_string(&path).with_context(|| format!("can't read {}", path.display()))?;
     let config = Config::parse(&json).with_context(|| format!("in {}", path.display()))?;
-    let mut model = Llama::new(&config, device);
-    weights(&mut model, dir, dtype)?;
+    let model = model_as(&config, dir, device, dtype)?;
     Ok((config, model))
+}
+
+/// Like [`model`], but shaped by `config` instead of the folder's `config.json`, for example
+/// one that `--rope-scaling` stretched.
+pub fn model_as(config: &Config, dir: &Path, device: &Device, dtype: FloatDType) -> Result<Llama> {
+    let mut model = Llama::new(config, device);
+    weights(&mut model, dir, dtype)?;
+    Ok(model)
 }
 
 /// Fills `model` with the weights in `dir`, cast to `dtype`. Fails if any weight is missing

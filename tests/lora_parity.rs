@@ -66,6 +66,10 @@ fn training_matches_peft_step_for_step() {
     let mut model = lora::set_factors(model, |path, _| start.get(path).cloned());
 
     let mut optimizer = train::optimizer();
+    let options = train::Options {
+        max_grad_norm: number("max_grad_norm"),
+        ..train::Options::default()
+    };
     let batch: Vec<&Example> = examples.iter().collect();
     for (i, want) in expected["losses"].as_array().unwrap().iter().enumerate() {
         let loss;
@@ -74,7 +78,7 @@ fn training_matches_peft_step_for_step() {
             &mut optimizer,
             &batch,
             number("learning_rate"),
-            number("max_grad_norm"),
+            &options,
             &mut 1.0,
             &device,
         );

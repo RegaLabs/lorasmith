@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 
 use super::{Info, Kind, Value, vocab};
 use crate::config::Config;
@@ -21,6 +21,7 @@ pub fn convert(model_dir: &Path, name: &str, out: &Path) -> Result<()> {
         _ => "llama",
     };
     let mut metadata = hyperparameters(&config, arch, name);
+    metadata.extend(yarn_keys(&config, arch)?);
     metadata.extend(vocab::metadata(model_dir, &config)?);
 
     let mut tensors: Vec<(Info, Source)> = Vec::new();
@@ -71,10 +72,7 @@ fn hyperparameters(config: &Config, arch: &str, name: &str) -> Vec<(String, Valu
         ("general.file_type".to_string(), Value::U32(7)),
         ("general.quantization_version".to_string(), Value::U32(2)),
         (key("vocab_size"), Value::U32(config.vocab_size as u32)),
-        (
-            key("context_length"),
-            Value::U32(config.max_position_embeddings as u32),
-        ),
+        (key("context_length"), Value::U32(config.context() as u32)),
         (
             key("embedding_length"),
             Value::U32(config.hidden_size as u32),
@@ -119,6 +117,31 @@ fn hyperparameters(config: &Config, arch: &str, name: &str) -> Vec<(String, Valu
         ));
     }
     keys
+}
+
+/// YaRN as llama.cpp reads it: the type, the factor and the original context, from which it
+/// derives the attention factor and the ramp the way transformers does by default. A model
+/// that overrides those would run differently there, so it gets no GGUF file.
+fn yarn_keys(config: &Config, arch: &str) -> Result<Vec<(String, Value)>> {
+    let Some(yarn) = config.yarn() else {
+        return Ok(Vec::new());
+    };
+    let derived = 0.1 * yarn.factor.ln() + 1.0;
+    ensure!(
+        (yarn.attention_factor - derived).abs() < 1e-9
+            && yarn.beta_fast == 32.0
+            && yarn.beta_slow == 1.0,
+        "its YaRN sets attention_factor, beta_fast or beta_slow, which a GGUF file can't carry"
+    );
+    let key = |k: &str| format!("{arch}.rope.scaling.{k}");
+    Ok(vec![
+        (key("type"), Value::Str("yarn".into())),
+        (key("factor"), Value::F32(yarn.factor as f32)),
+        (
+            key("original_context_length"),
+            Value::U32(yarn.original_context as u32),
+        ),
+    ])
 }
 
 fn gguf_name(hf: &str) -> Option<String> {
@@ -225,6 +248,37 @@ mod tests {
         );
         assert_eq!(gguf_name("lm_head.weight").unwrap(), "output.weight");
         assert!(gguf_name("model.layers.0.mlp.experts.weight").is_none());
+    }
+
+    #[test]
+    fn yarn_goes_into_llama_cpp_keys() {
+        let mut config =
+            Config::parse(&std::fs::read_to_string("tests/fixtures/qwen2/config.json").unwrap())
+                .unwrap();
+        assert!(yarn_keys(&config, "qwen2").unwrap().is_empty());
+        config.stretch(4.0).unwrap();
+        let keys = yarn_keys(&config, "qwen2").unwrap();
+        let names: Vec<&str> = keys.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "qwen2.rope.scaling.type",
+                "qwen2.rope.scaling.factor",
+                "qwen2.rope.scaling.original_context_length"
+            ]
+        );
+        assert!(matches!(keys[2].1, Value::U32(128)));
+        let context = hyperparameters(&config, "qwen2", "x")
+            .into_iter()
+            .find(|(k, _)| k == "qwen2.context_length");
+        assert!(matches!(context, Some((_, Value::U32(512)))));
+
+        let custom = r#"{"model_type": "qwen2", "vocab_size": 64, "hidden_size": 32,
+            "intermediate_size": 48, "num_hidden_layers": 2, "num_attention_heads": 4,
+            "rms_norm_eps": 1e-06, "max_position_embeddings": 128,
+            "rope_scaling": {"rope_type": "yarn", "factor": 4.0, "beta_fast": 16.0}}"#;
+        let error = yarn_keys(&Config::parse(custom).unwrap(), "qwen2").unwrap_err();
+        assert!(error.to_string().contains("beta_fast"));
     }
 
     #[test]

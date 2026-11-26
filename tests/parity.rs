@@ -1,5 +1,5 @@
 //! Our model must produce the same logits as Hugging Face transformers for the same weights.
-//! Fixtures come from `tools/make_fixtures.py`.
+//! Fixtures come from `tools/make_fixtures.py` and `tools/make_yarn_fixture.py`.
 
 use std::fs;
 use std::path::Path;
@@ -58,4 +58,9 @@ fn qwen2_with_tied_embeddings_and_attention_bias() {
 #[test]
 fn qwen3_with_qk_norm_and_custom_head_dim() {
     check("qwen3");
+}
+
+#[test]
+fn qwen2_with_yarn_past_its_original_context() {
+    check("qwen2-yarn");
 }
