@@ -169,23 +169,26 @@ When memory runs out, lorasmith says so and suggests, in this order: `--qlora`, 
 
 ### Long examples on the CPU
 
-Measured on an Intel i5-14400F with 16 GB of RAM, no GPU used: Qwen2.5-0.5B with `--cpu --batch-size 1 --epochs 1` on three plain-text examples, each long enough to be cut to `--max-len`. Peak RAM is the process's committed memory. Seconds per step are the average of steps 2 and 3; step 1 also loads the model. The loss is the one reported at step 3. The PC ran other programs at the same time, so the times vary by about a quarter from run to run.
+Measured on an Intel i5-14400F (16 threads) with 16 GB of RAM, no GPU used: Qwen2.5-0.5B with `--cpu --batch-size 1 --epochs 1` on three plain-text examples, each long enough to be cut to `--max-len`. Peak RAM is the process's committed memory. Seconds per step are the average of steps 2 and 3; step 1 also loads the model. The loss is the one reported at step 3. Builds before multi-threading computed on one thread; the last two rows ran on 14 with `--threads 14`. The PC ran other programs at the same time, so the times vary by about a quarter from run to run.
 
-| `--max-len` | Version | Flags | Peak RAM | Seconds per step | Loss at step 3 |
-|---|---|---|---|---|---|
-| 1024 | 0.1.1 | none | 10.6 GB | 37 | 1.312 |
-| 1024 | this one | none | 6.5 GB | 42 | 1.312 |
-| 1024 | this one | `--checkpoint` | 3.6 GB | 75 | 1.312 |
-| 4096 | 0.1.1 | none | over 22 GB, stopped before step 1 finished | - | - |
-| 4096 | this one | none | 15.4 GB | 382 | 1.024 |
-| 4096 | this one | `--checkpoint` | 3.8 GB | 352 | 1.024 |
-| 8192 | 0.1.1 | none | over 22 GB, stopped before step 1 finished | - | - |
-| 16384 | 0.1.1 | none | over 22 GB, stopped before step 1 finished | - | - |
+| `--max-len` | Version | Flags | Threads | Peak RAM | Seconds per step | Loss at step 3 |
+|---|---|---|---|---|---|---|
+| 1024 | 0.1.1 | none | 1 | 10.6 GB | 37 | 1.312 |
+| 1024 | this one | none | 1 | 6.5 GB | 42 | 1.312 |
+| 1024 | this one | `--checkpoint` | 1 | 3.6 GB | 75 | 1.312 |
+| 1024 | this one | `--checkpoint` | 14 | 3.6 GB | 18 | 1.312 |
+| 4096 | 0.1.1 | none | 1 | over 22 GB, stopped before step 1 finished | - | - |
+| 4096 | this one | none | 1 | 15.4 GB | 382 | 1.024 |
+| 4096 | this one | `--checkpoint` | 1 | 3.8 GB | 352 | 1.024 |
+| 8192 | 0.1.1 | none | 1 | over 22 GB, stopped before step 1 finished | - | - |
+| 8192 | this one | `--checkpoint` | 14 | 4.2 GB | 523 | 0.977 |
+| 16384 | 0.1.1 | none | 1 | over 22 GB, stopped before step 1 finished | - | - |
 
-**8192, 16384 and 32768 tokens have not been measured with this version yet.** 0.1.1 ran out at 4096, 8192 and 16384 because Burn's autodiff kept each layer's full `[heads, seq, seq]` attention probabilities for the backward pass. This version runs the backward pass one layer at a time: attention goes through in blocks that keep one log-sum-exp per query, and the loss goes through chunks of positions. At 1024 tokens, the only length 0.1.1 finished, the losses match its to the last digit shown, and `--checkpoint` changes no loss at any length measured.
+**16384 and 32768 tokens have not been tested with this version yet**, and neither has 8192 without `--checkpoint`. 0.1.1 ran out at 4096, 8192 and 16384 because Burn's autodiff kept each layer's full `[heads, seq, seq]` attention probabilities for the backward pass. This version runs the backward pass one layer at a time: attention goes through in blocks that keep one log-sum-exp per query, and the loss goes through chunks of positions. At 1024 tokens, the only length 0.1.1 finished, the step-3 losses match its to the last digit shown, and `--checkpoint` changes no loss at any length measured. Fourteen threads add up numbers in a different order than one, which moved the step-2 loss at 1024 tokens from 1.418 to 1.419.
 
 - **Without `--checkpoint`, memory still grows with length**, because every layer's activations are kept: 15.4 GB at 4096 tokens fills a 16 GB PC, and Windows starts paging, which is most of why that run is slow.
-- **With `--checkpoint`, memory barely grows**: 3.6 GB at 1024 tokens and 3.8 GB at 4096. Each layer runs twice, which costs time on short examples but not at 4096, where the run without it pages.
+- **With `--checkpoint`, memory barely grows**: 3.6 GB at 1024 tokens, 3.8 GB at 4096 and 4.2 GB at 8192.
+- **Threads make the biggest difference to time**: at 1024 tokens with `--checkpoint`, 14 threads took 18 seconds a step against 75 on one.
 - **`--rope-scaling yarn` was checked in Ollama 0.40.18**: on an 802-token prompt, the GGUF file's top five next-token log-probabilities were within 0.055 of transformers with YaRN, and up to 0.32 away from transformers without it.
 
 ## Limits
