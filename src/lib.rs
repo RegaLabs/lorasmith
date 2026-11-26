@@ -18,3 +18,4 @@ pub mod rope;
 pub mod schedule;
 pub mod shards;
 pub mod train;
+pub mod yarn;

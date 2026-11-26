@@ -20,14 +20,16 @@ impl Rope {
     pub fn new(config: &Config, device: &Device) -> Self {
         let freqs = inverse_frequencies(config);
         let half = freqs.len();
-        let positions = config.max_position_embeddings;
+        let positions = config.context();
+        // YaRN scales cos and sin up, as transformers' `attention_scaling` does.
+        let scale = config.yarn().map_or(1.0, |yarn| yarn.attention_factor);
         let mut cos = Vec::with_capacity(positions * half * 2);
         let mut sin = Vec::with_capacity(positions * half * 2);
         for pos in 0..positions {
             let angles = freqs.iter().map(|f| pos as f64 * f);
             let row: Vec<f64> = angles.clone().chain(angles).collect();
-            cos.extend(row.iter().map(|a| a.cos() as f32));
-            sin.extend(row.iter().map(|a| a.sin() as f32));
+            cos.extend(row.iter().map(|a| (a.cos() * scale) as f32));
+            sin.extend(row.iter().map(|a| (a.sin() * scale) as f32));
         }
         let shape = [positions, half * 2];
         Self {
@@ -50,12 +52,16 @@ impl Rope {
     }
 }
 
-/// The rotation speed of each pair of dimensions, with Llama 3's scaling if the model uses it.
+/// The rotation speed of each pair of dimensions, with Llama 3's or YaRN's scaling if the
+/// model uses it.
 pub fn inverse_frequencies(config: &Config) -> Vec<f64> {
     let dim = config.head_dim();
     let base: Vec<f64> = (0..dim / 2)
         .map(|i| 1.0 / config.rope_theta().powf(2.0 * i as f64 / dim as f64))
         .collect();
+    if let Some(yarn) = config.yarn() {
+        return crate::yarn::frequencies(base, dim, config.rope_theta(), &yarn);
+    }
     let Some(s) = config.llama3_scaling() else {
         return base;
     };
@@ -99,9 +105,59 @@ mod tests {
             low_freq_factor: 1.0,
             high_freq_factor: 4.0,
             original_max_position_embeddings: 8192,
+            ..Default::default()
         });
         let scaled = inverse_frequencies(&config);
         assert_eq!(scaled[0], plain[0]);
         assert!((scaled[63] - plain[63] / 8.0).abs() < 1e-12);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct YarnCase {
+        config: serde_json::Value,
+        inv_freq: Vec<f64>,
+        attention_factor: f64,
+        positions: Vec<usize>,
+        cos: Vec<Vec<f32>>,
+        sin: Vec<Vec<f32>>,
+    }
+
+    /// Fixtures from `tools/make_yarn_fixture.py`, computed by transformers.
+    #[test]
+    fn yarn_matches_transformers() {
+        let text = std::fs::read_to_string("tests/fixtures/yarn/rope.json").unwrap();
+        let cases: std::collections::BTreeMap<String, YarnCase> =
+            serde_json::from_str(&text).unwrap();
+        for (name, case) in cases {
+            let config = Config::parse(&case.config.to_string()).unwrap();
+            let ours = inverse_frequencies(&config);
+            assert_eq!(ours.len(), case.inv_freq.len(), "{name}");
+            for (i, (a, b)) in ours.iter().zip(&case.inv_freq).enumerate() {
+                // transformers computes them in f32.
+                assert!(
+                    (a - b).abs() <= 1e-6 * b,
+                    "{name}: frequency {i}: {a} vs {b}"
+                );
+            }
+            let factor = config.yarn().unwrap().attention_factor;
+            assert!((factor - case.attention_factor).abs() < 1e-12, "{name}");
+
+            let rope = Rope::new(&config, &Device::flex());
+            let table = |t: &Tensor<2>, row: usize| {
+                let values = t.clone().narrow(0, row, 1).into_data();
+                values.try_to_vec::<f32>().unwrap()
+            };
+            for (i, &pos) in case.positions.iter().enumerate() {
+                let pairs = table(&rope.cos, pos)
+                    .into_iter()
+                    .zip(&case.cos[i])
+                    .chain(table(&rope.sin, pos).into_iter().zip(&case.sin[i]));
+                for (a, b) in pairs {
+                    // transformers turns the angle in f32, which drifts by up to a few
+                    // ten-thousandths by position 4095.
+                    assert!((a - b).abs() < 1e-3, "{name}: position {pos}: {a} vs {b}");
+                }
+            }
+        }
     }
 }

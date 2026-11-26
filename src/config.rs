@@ -29,8 +29,9 @@ pub struct Config {
     pub use_sliding_window: Option<bool>,
 }
 
-/// Llama 3 stretches its RoPE frequencies. Other scaling schemes are refused in [`Config::check`].
-#[derive(Debug, Clone, Deserialize)]
+/// How a model stretches its RoPE frequencies: Llama 3's scheme or YaRN. Others are refused in
+/// [`Config::check`].
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct RopeParameters {
     /// Empty when the config only names it `type`, see [`RopeParameters::kind`].
     #[serde(default)]
@@ -47,6 +48,10 @@ pub struct RopeParameters {
     pub high_freq_factor: f64,
     #[serde(default)]
     pub original_max_position_embeddings: usize,
+    /// YaRN only, like the three below: overrides the cos/sin magnitude `factor` implies.
+    pub attention_factor: Option<f64>,
+    pub beta_fast: Option<f64>,
+    pub beta_slow: Option<f64>,
 }
 
 impl RopeParameters {
@@ -78,10 +83,11 @@ impl Config {
             );
         }
         if let Some(rope) = self.rope()
-            && !matches!(rope.kind(), "llama3" | "default")
+            && !matches!(rope.kind(), "llama3" | "yarn" | "default")
         {
             bail!(
-                "RoPE scaling `{}` is not supported yet. Try a model without long-context scaling.",
+                "RoPE scaling `{}` is not supported yet. Try a model without long-context scaling, \
+                 or one with `yarn` scaling.",
                 rope.kind()
             );
         }
@@ -93,11 +99,16 @@ impl Config {
 
     /// Fails when examples of `max_len` tokens would not fit the model's context.
     pub fn check_max_len(&self, max_len: usize) -> Result<()> {
-        let context = self.max_position_embeddings;
+        let context = self.context();
         if max_len > context {
+            let stretch = if self.rope().is_some_and(|rope| rope.kind() != "default") {
+                ""
+            } else {
+                ", or stretch the context with --rope-scaling yarn"
+            };
             bail!(
                 "--max-len {max_len} is longer than this model's context of {context} tokens. \
-                 Use --max-len {context} or less."
+                 Use --max-len {context} or less{stretch}."
             );
         }
         if let Some(window) = self.attention_window()
@@ -122,7 +133,8 @@ impl Config {
         }
     }
 
-    fn rope(&self) -> Option<&RopeParameters> {
+    /// The RoPE settings, from whichever of the two places transformers keeps them.
+    pub fn rope(&self) -> Option<&RopeParameters> {
         self.rope_parameters.as_ref().or(self.rope_scaling.as_ref())
     }
 
