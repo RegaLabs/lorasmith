@@ -115,6 +115,16 @@ impl Llama {
         }
     }
 
+    /// How many tokens the model knows.
+    pub fn vocab_size(&self) -> usize {
+        self.embed_tokens.weight.dims()[0]
+    }
+
+    /// The rotary tables every layer shares.
+    pub fn rope(&self) -> &Rope {
+        &self.rope
+    }
+
     /// Whether the weights are held in f16, which training and merging must allow for.
     pub fn is_half(&self) -> bool {
         self.embed_tokens.weight.val().dtype() == DType::F16
@@ -123,16 +133,31 @@ impl Llama {
 
 impl Block {
     fn forward(&self, x: Tensor<3>, rope: &Rope) -> Tensor<3> {
-        let x = x.clone()
-            + self
-                .self_attn
-                .forward(self.input_layernorm.forward(x), rope);
+        let (q, k, v) = self.attention_inputs(x.clone(), rope);
+        let options = AttentionModuleOptions {
+            is_causal: true,
+            ..Default::default()
+        };
+        self.finish(x, attention(q, k, v, None, None, None, options))
+    }
+
+    /// The first half of [`Block::forward`]: queries, keys and values `[batch, heads, seq,
+    /// head_dim]` for causal attention, with every key and value head repeated for the query
+    /// heads that share it.
+    pub fn attention_inputs(&self, x: Tensor<3>, rope: &Rope) -> (Tensor<4>, Tensor<4>, Tensor<4>) {
+        self.self_attn.inputs(self.input_layernorm.forward(x), rope)
+    }
+
+    /// The second half of [`Block::forward`]: the block's output from its input `x` and the
+    /// attention's output `[batch, heads, seq, head_dim]`.
+    pub fn finish(&self, x: Tensor<3>, attended: Tensor<4>) -> Tensor<3> {
+        let x = x + self.self_attn.output(attended);
         x.clone() + self.mlp.forward(self.post_attention_layernorm.forward(x))
     }
 }
 
 impl Attention {
-    fn forward(&self, x: Tensor<3>, rope: &Rope) -> Tensor<3> {
+    fn inputs(&self, x: Tensor<3>, rope: &Rope) -> (Tensor<4>, Tensor<4>, Tensor<4>) {
         let [batch, seq, _] = x.dims();
         let split = |t: Tensor<3>, heads| {
             t.reshape([batch, seq, heads, self.head_dim])
@@ -147,26 +172,16 @@ impl Attention {
             k = k_norm.forward(k);
         }
         let (q, k) = (rope.apply(q), rope.apply(k));
-
         let repeat = self.heads / self.kv_heads;
-        let options = AttentionModuleOptions {
-            is_causal: true,
-            ..Default::default()
-        };
-        let out = attention(
-            q,
-            self.repeat_kv(k, repeat),
-            self.repeat_kv(v, repeat),
-            None,
-            None,
-            None,
-            options,
-        );
-        lora::forward(
-            &self.o_proj,
-            out.swap_dims(1, 2)
-                .reshape([batch, seq, self.heads * self.head_dim]),
-        )
+        (q, self.repeat_kv(k, repeat), self.repeat_kv(v, repeat))
+    }
+
+    fn output(&self, attended: Tensor<4>) -> Tensor<3> {
+        let [batch, heads, seq, head_dim] = attended.dims();
+        let merged = attended
+            .swap_dims(1, 2)
+            .reshape([batch, seq, heads * head_dim]);
+        lora::forward(&self.o_proj, merged)
     }
 
     /// Grouped-query attention shares each key/value head between several query heads.

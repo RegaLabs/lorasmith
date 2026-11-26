@@ -1,5 +1,7 @@
 //! Turning examples into tensors, and the loss training minimizes.
 
+use std::ops::Range;
+
 use burn::tensor::{Device, FloatDType, Int, Tensor, TensorData, activation};
 
 use crate::data::Example;
@@ -36,25 +38,75 @@ pub fn tensors(batch: &[&Example], device: &Device) -> Batch {
     }
 }
 
+/// Logits one chunk of the loss may hold, 512 MB in f32. With Qwen's 150k-token vocabulary,
+/// 16k trained positions would otherwise take 10 GB per logits-sized tensor.
+const CHUNK_LOGITS: usize = 128 << 20;
+
 /// Mean cross-entropy over the trained positions. Logits are computed for those positions
-/// only: with a 150k-token vocabulary, logits for every position of a long batch take gigabytes.
+/// only, a chunk at a time, see [`chunks`].
 pub fn loss(model: &Llama, batch: Batch) -> Tensor<1> {
     let hidden = model.hidden(batch.inputs);
     let [rows, len, width] = hidden.dims();
-    let picked = hidden
-        .reshape([rows * len, width])
-        .select(0, batch.positions);
+    let hidden = hidden.reshape([rows * len, width]);
+    let count = batch.targets.dims()[0];
+    let sums = chunks(count, model.vocab_size()).map(|range| {
+        let positions = batch.positions.clone().slice(range.clone());
+        loss_sum(
+            model,
+            hidden.clone(),
+            positions,
+            batch.targets.clone().slice(range),
+        )
+    });
+    Tensor::cat(sums.collect(), 0)
+        .sum()
+        .div_scalar(count as f64)
+}
+
+/// Ranges of trained positions that each hold at most [`CHUNK_LOGITS`] logits.
+pub fn chunks(count: usize, vocab: usize) -> impl Iterator<Item = Range<usize>> {
+    let size = (CHUNK_LOGITS / vocab.max(1)).max(1);
+    (0..count)
+        .step_by(size)
+        .map(move |start| start..count.min(start + size))
+}
+
+/// Summed cross-entropy of predicting `targets` at `positions` of the flattened final hidden
+/// states `[batch * seq, hidden]`.
+pub fn loss_sum(
+    model: &Llama,
+    hidden: Tensor<2>,
+    positions: Tensor<1, Int>,
+    targets: Tensor<1, Int>,
+) -> Tensor<1> {
     // Half-precision logits are too coarse for the loss: exp overflows and small
     // probabilities round to zero.
-    let logits = model.logits(picked).cast(FloatDType::F32);
+    let logits = model
+        .logits(hidden.select(0, positions))
+        .cast(FloatDType::F32);
     let log_probs = activation::log_softmax(logits, 1);
-    let chosen: Tensor<2> = log_probs.gather(1, batch.targets.unsqueeze_dim(1));
-    chosen.mean().neg()
+    let chosen: Tensor<2> = log_probs.gather(1, targets.unsqueeze_dim(1));
+    chosen.sum().neg()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chunks_cover_every_position_once() {
+        assert_eq!(
+            chunks(5, CHUNK_LOGITS).collect::<Vec<_>>(),
+            [0..1, 1..2, 2..3, 3..4, 4..5]
+        );
+        let mut whole = chunks(5, 1);
+        assert_eq!((whole.next(), whole.next()), (Some(0..5), None));
+        assert_eq!(
+            chunks(5, CHUNK_LOGITS / 2).collect::<Vec<_>>(),
+            [0..2, 2..4, 4..5]
+        );
+        assert_eq!(chunks(0, 10).count(), 0);
+    }
 
     #[test]
     fn padding_and_prompt_tokens_are_masked_out() {

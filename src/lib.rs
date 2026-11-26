@@ -1,5 +1,7 @@
 //! Fine-tune open LLMs with LoRA on whatever hardware you have.
 
+pub mod attention;
+pub mod backprop;
 pub mod batch;
 pub mod chat;
 pub mod config;

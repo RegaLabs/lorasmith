@@ -41,7 +41,7 @@ fn trained(dtype: FloatDType, mut loss_scale: f64, device: &Device) -> (Llama, V
             &mut optimizer,
             &[&example],
             1e-2,
-            1.0,
+            &Options::default(),
             &mut loss_scale,
             device,
         );
@@ -94,7 +94,7 @@ fn gradients_too_big_for_half_precision_skip_the_step() {
         &mut train::optimizer(),
         &[&example],
         1e-2,
-        1.0,
+        &Options::default(),
         &mut loss_scale,
         &device,
     );

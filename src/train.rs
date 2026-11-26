@@ -4,9 +4,10 @@ use std::collections::HashMap;
 
 use anyhow::{Result, ensure};
 use burn::module::Module;
-use burn::optim::{AdamWConfig, GradientsParams, ModuleOptimizer};
+use burn::optim::{AdamWConfig, ModuleOptimizer};
 use burn::tensor::{Device, TensorData};
 
+use crate::backprop;
 use crate::batch;
 use crate::data::Example;
 use crate::lora;
@@ -25,6 +26,9 @@ pub struct Options {
     pub max_grad_norm: f64,
     /// Picks the adapters' starting values and the order of examples, so runs repeat exactly.
     pub seed: u64,
+    /// Runs each layer again during the backward pass instead of keeping its activations:
+    /// less memory for long examples and the same results, for the time of another forward pass.
+    pub checkpoint: bool,
 }
 
 impl Default for Options {
@@ -37,6 +41,7 @@ impl Default for Options {
             batch_size: 4,
             max_grad_norm: 1.0,
             seed: 42,
+            checkpoint: false,
         }
     }
 }
@@ -123,7 +128,7 @@ pub fn train(
                 &mut optimizer,
                 &batch,
                 lr,
-                options.max_grad_norm,
+                options,
                 &mut loss_scale,
                 device,
             );
@@ -164,7 +169,8 @@ pub fn train(
     Ok(model)
 }
 
-/// One optimizer step on one batch. Returns the updated model and the batch's loss before the step.
+/// One optimizer step on one batch, with the gradient clipping and checkpointing `options`
+/// ask for. Returns the updated model and the batch's loss before the step.
 ///
 /// The loss is multiplied by `loss_scale` on the way back through the model, because small
 /// gradients vanish in half precision on a GPU: unscaled, SmolLM2's arrive at a third of
@@ -175,14 +181,13 @@ pub fn step(
     optimizer: &mut ModuleOptimizer,
     batch: &[&Example],
     learning_rate: f64,
-    max_grad_norm: f64,
+    options: &Options,
     loss_scale: &mut f64,
     device: &Device,
 ) -> (Llama, f32) {
-    let loss = batch::loss(&model, batch::tensors(batch, device));
-    let value: f32 = loss.clone().into_scalar();
-    let grads = GradientsParams::from_grads(loss.mul_scalar(*loss_scale).backward(), &model);
-    match lora::clip_grad_norm(&model, grads, *loss_scale, max_grad_norm) {
+    let batch = batch::tensors(batch, device);
+    let (value, grads) = backprop::gradients(&model, batch, *loss_scale, options.checkpoint);
+    match lora::clip_grad_norm(&model, grads, *loss_scale, options.max_grad_norm) {
         Some(grads) => (optimizer.step(learning_rate, model, grads), value),
         None => {
             *loss_scale = (*loss_scale / 2.0).max(1.0);

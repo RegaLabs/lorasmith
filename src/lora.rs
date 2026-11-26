@@ -9,7 +9,7 @@ use burn::optim::GradientsParams;
 use burn::tensor::module::linear;
 use burn::tensor::{Device, Distribution, FloatDType, Tensor, TensorData};
 
-use crate::model::Llama;
+use crate::model::{Block, Llama};
 
 /// Every projection inside the blocks gets an adapter, as the QLoRA paper recommends.
 /// Embeddings and the output head stay as they are.
@@ -120,20 +120,25 @@ pub fn factors(model: &Llama) -> HashMap<String, TensorData> {
 pub fn projections(model: &Llama) -> Vec<(String, &Linear)> {
     let mut all = Vec::new();
     for (i, block) in model.layers.iter().enumerate() {
-        let (attn, mlp) = (&block.self_attn, &block.mlp);
-        for (name, linear) in [
-            ("self_attn.q_proj", &attn.q_proj),
-            ("self_attn.k_proj", &attn.k_proj),
-            ("self_attn.v_proj", &attn.v_proj),
-            ("self_attn.o_proj", &attn.o_proj),
-            ("mlp.gate_proj", &mlp.gate_proj),
-            ("mlp.up_proj", &mlp.up_proj),
-            ("mlp.down_proj", &mlp.down_proj),
-        ] {
+        for (name, linear) in block_projections(block) {
             all.push((format!("model.layers.{i}.{name}"), linear));
         }
     }
     all
+}
+
+/// The linear layers of one block, under their names within it.
+pub fn block_projections(block: &Block) -> [(&'static str, &Linear); 7] {
+    let (attn, mlp) = (&block.self_attn, &block.mlp);
+    [
+        ("self_attn.q_proj", &attn.q_proj),
+        ("self_attn.k_proj", &attn.k_proj),
+        ("self_attn.v_proj", &attn.v_proj),
+        ("self_attn.o_proj", &attn.o_proj),
+        ("mlp.gate_proj", &mlp.gate_proj),
+        ("mlp.up_proj", &mlp.up_proj),
+        ("mlp.down_proj", &mlp.down_proj),
+    ]
 }
 
 /// Scales all adapter gradients together so their combined norm is at most `max_norm`,
